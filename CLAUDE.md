@@ -44,4 +44,4 @@ Do NOT add Pilots, Systems Officers, Drifters, multiplayer, or a campaign yet.
 
 ## Not yet done
 
-- Beacons and the defensive structure are not implemented yet (README roadmap).
+- The defensive structure is not implemented yet (README roadmap). Beacons are done.

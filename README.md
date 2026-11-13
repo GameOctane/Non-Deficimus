@@ -8,7 +8,7 @@ The *NDS Non Deficimus*, a battered repair-and-recovery ship, falls out of a col
 
 ## Status
 
-Early prototype. The core loop is playable; Beacons, structures, more unit types and multiplayer are still on the roadmap.
+Early prototype. The core loop and Beacons are playable; a defensive structure, more unit types and multiplayer are still on the roadmap.
 
 ## Run it
 
@@ -22,7 +22,19 @@ A terminal of at least 100x30 is recommended.
 
 ## How to play
 
-**Hold and push.** Harvesting raises the sector's **Wake** meter. When Wake crosses a threshold (or time runs out), a Hollow **surge** hits your base, with a few seconds of warning. Survive three surges to hold the lane.
+**Hold and push.** Harvesting raises the sector's **Wake** meter. When Wake crosses a threshold (or time runs out), a Hollow **surge** hits your base, with a few seconds of warning. Surges keep getting bigger.
+
+**Win:** relight all four **Beacons**, then survive the final surge (the first one to launch after the fourth light comes on). If a Beacon goes dark before that surge is cleared, you'll have to relight it and hold out for the next one.
+
+**Lose:** the hull is destroyed or Resolve hits zero.
+
+### Beacons
+
+Four dead Beacons sit around the sector, each farther from the ship than the last. They show as `o` (dark, dim red), `o` in bold yellow with a progress bar above it (being relit), and `*` (lit; it turns orange when corroded).
+
+- An **Engineer** standing next to a Beacon relights it in about 8 seconds. It costs **30 Driftglass**, paid when the work starts. Right-clicking a Beacon sends the Engineer to its side.
+- Each lit Beacon makes **Wake decay faster** and gives a small **Resolve** bonus.
+- The Hollow will **corrode lit Beacons** when no crew are nearby. A Beacon that runs out of Integrity goes dark again, and the Resolve bonus goes with it.
 
 | Crew | Glyph | Role |
 | --- | --- | --- |
@@ -40,6 +52,7 @@ A terminal of at least 100x30 is recommended.
 | --- | --- |
 | Left-drag | Box-select crew |
 | Right-click (ground) | Move selected crew (cadets on Driftglass or the ship resume harvesting) |
+| Right-click (a Beacon) | Move to its side; an Engineer there relights it |
 | Right-click (a Hollow) | Marines focus-fire that target |
 | `a`, then click | Attack-move: Marines advance and engage anything they meet |
 | `h` | Hold position: stay put and shoot |
@@ -61,7 +74,8 @@ The simulation is deterministic (fixed 10 Hz tick, seeded RNG), which keeps lock
 
 ## Roadmap
 
-- [ ] Beacons to relight, and structures to build
+- [x] Beacons to relight
+- [ ] A defensive structure to build
 - [ ] Pilots and Systems Officers
 - [ ] Mission scripting and a Captain's log campaign
 - [ ] Co-op over the network

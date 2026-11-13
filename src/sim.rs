@@ -10,8 +10,17 @@ pub const H: i32 = 48;
 pub const SHIP: (i32, i32) = (W / 2, H / 2);
 /// Real-time length of one tick (10 Hz). The sim itself only counts ticks.
 pub const TICK_MS: u64 = 100;
-pub const WIN_SURGES: u32 = 3;
 pub const MAX_CREW: usize = 24;
+pub const BEACON_COUNT: usize = 4;
+/// Ticks an Engineer must tend a Beacon to relight it (~8 s).
+pub const RELIGHT_TICKS: u32 = 80;
+/// Driftglass spent when a relight begins.
+pub const RELIGHT_COST: i32 = 30;
+pub const BEACON_HP: i32 = 30;
+/// Resolve gained when a Beacon is relit (and lost again if it is destroyed).
+pub const BEACON_RESOLVE: i32 = 3;
+/// Chebyshev distance bands from the ship, one per Beacon, nearest first.
+const BEACON_BANDS: [(i32, i32); BEACON_COUNT] = [(8, 12), (16, 22), (24, 32), (36, 44)];
 
 // ---------------------------------------------------------------- model
 
@@ -96,6 +105,20 @@ pub struct Foe {
     pub cd: u32,
 }
 
+/// A dead navigation Beacon. Engineers standing next to it can relight it;
+/// the Hollow can corrode it back to darkness.
+#[derive(Debug)]
+pub struct Beacon {
+    pub pos: (i32, i32),
+    pub lit: bool,
+    /// Relight progress in ticks (0..RELIGHT_TICKS) while unlit.
+    pub progress: u32,
+    /// True once the Driftglass for the current relight has been spent.
+    pub paid: bool,
+    /// Integrity; only meaningful while lit.
+    pub hp: i32,
+}
+
 #[derive(Debug)]
 pub struct Surge {
     pub in_ticks: u32,
@@ -133,6 +156,10 @@ pub struct Game {
     pub tiles: Vec<Tile>,
     pub units: Vec<Unit>,
     pub foes: Vec<Foe>,
+    pub beacons: Vec<Beacon>,
+    /// True while the surge in flight is the final one (all Beacons were lit
+    /// when it launched). Clearing it with all Beacons still lit wins.
+    pub final_surge: bool,
     pub hull: i32,
     pub hull_max: i32,
     pub hull_base: i32,
@@ -174,6 +201,8 @@ impl Game {
             tiles: vec![Tile::Ground; (W * H) as usize],
             units: Vec::new(),
             foes: Vec::new(),
+            beacons: Vec::new(),
+            final_surge: false,
             hull: 200,
             hull_max: 200,
             hull_base: 200,
@@ -204,6 +233,7 @@ impl Game {
         g.say("Captain's Log: the ship is down and mostly upright. Calling that a win.");
         g.say("Cadets are already mining Driftglass. Engineers keep us patched. Marines keep us alive.");
         g.say("Heads up: every crystal we pull wakes the Hollow. Train with 1 / 2 / 3.");
+        g.say("Four dead Beacons out there. Somebody should fix that. Probably an Engineer.");
         g
     }
 
@@ -250,10 +280,63 @@ impl Game {
                 }
             }
         }
+        self.place_beacons();
+    }
+
+    /// One Beacon per distance band, on bare ground (never rock or glass)
+    /// and reachable on foot from the ship.
+    fn place_beacons(&mut self) {
+        let start = (SHIP.0 + 3, SHIP.1);
+        for (lo, hi) in BEACON_BANDS {
+            loop {
+                let p = (
+                    2 + self.rand((W - 4) as u32) as i32,
+                    2 + self.rand((H - 4) as u32) as i32,
+                );
+                let d = cheb(p, SHIP);
+                if d < lo
+                    || d > hi
+                    || self.tiles[idx(p)] != Tile::Ground
+                    || self.step_toward(start, p, 1).is_none()
+                {
+                    continue;
+                }
+                self.beacons.push(Beacon { pos: p, lit: false, progress: 0, paid: false, hp: 0 });
+                break;
+            }
+        }
+    }
+
+    pub fn beacons_lit(&self) -> usize {
+        self.beacons.iter().filter(|b| b.lit).count()
     }
 
     fn walkable(&self, p: (i32, i32)) -> bool {
-        in_bounds(p) && self.tiles[idx(p)] != Tile::Rock && !in_ship(p)
+        in_bounds(p)
+            && self.tiles[idx(p)] != Tile::Rock
+            && !in_ship(p)
+            && !self.beacons.iter().any(|b| b.pos == p)
+    }
+
+    /// If `t` is a Beacon (which can't be stood on), the walkable tile next
+    /// to it that is closest to `from`; otherwise `t` itself.
+    fn standing_spot(&self, t: (i32, i32), from: (i32, i32)) -> (i32, i32) {
+        if !self.beacons.iter().any(|b| b.pos == t) {
+            return t;
+        }
+        let mut best: Option<((i32, i32), i32)> = None;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let n = (t.0 + dx, t.1 + dy);
+                if (dx, dy) != (0, 0) && self.walkable(n) {
+                    let d = cheb(from, n);
+                    if best.map_or(true, |(_, bd)| d < bd) {
+                        best = Some((n, d));
+                    }
+                }
+            }
+        }
+        best.map_or(t, |(p, _)| p)
     }
 
     /// BFS to the first tile within `range` of `to`; returns the next step.
@@ -409,12 +492,15 @@ impl Game {
         }
         let glass_tile = matches!(self.tiles[idx(t)], Tile::Glass(_));
         let ship_tile = in_ship(t);
-        for u in self.units.iter_mut().filter(|u| u.selected && u.down.is_none()) {
+        let mut units = std::mem::take(&mut self.units);
+        for u in units.iter_mut().filter(|u| u.selected && u.down.is_none()) {
             u.order = match u.kind {
                 Kind::Cadet if glass_tile || ship_tile => Order::Harvest,
-                _ => Order::Move(t),
+                // clicking a Beacon means "go stand next to it"
+                _ => Order::Move(self.standing_spot(t, u.pos)),
             };
         }
+        self.units = units;
     }
 
     fn order_attack(&mut self, id: u32, at: (i32, i32)) {
@@ -468,12 +554,15 @@ impl Game {
         }
         self.tick += 1;
         if self.tick % 50 == 0 {
-            self.wake = (self.wake - 1.0).max(0.0);
+            // every lit Beacon helps the sector settle faster
+            let decay = 1.0 + 0.5 * self.beacons_lit() as f32;
+            self.wake = (self.wake - decay).max(0.0);
         }
         self.schedule_surge();
         self.run_surge_timer();
         self.update_crew();
         self.update_engineers();
+        self.update_beacons();
         self.update_foes();
         self.update_down();
         self.resolve_wave();
@@ -491,11 +580,89 @@ impl Game {
             self.surge = Some(Surge { in_ticks: 60, count, edge });
             self.surges_launched += 1;
             self.last_surge = self.tick;
+            self.final_surge = self.beacons_lit() == BEACON_COUNT;
             let dir = ["north", "east", "south", "west"][edge as usize];
-            self.say(format!(
-                "SURGE inbound from the {dir}. {count} contacts, six seconds. Fortify!"
-            ));
+            if self.final_surge {
+                self.say(format!(
+                    "FINAL SURGE from the {dir}. {count} contacts. All four lights are up; hold them."
+                ));
+            } else {
+                self.say(format!(
+                    "SURGE inbound from the {dir}. {count} contacts, six seconds. Fortify!"
+                ));
+            }
         }
+    }
+
+    /// Engineers next to a dark Beacon relight it: 30 Driftglass up front,
+    /// then ~8 seconds of work.
+    fn update_beacons(&mut self) {
+        for k in 0..self.beacons.len() {
+            if self.beacons[k].lit {
+                continue;
+            }
+            let bp = self.beacons[k].pos;
+            let tended = self
+                .units
+                .iter()
+                .any(|u| u.kind == Kind::Engineer && u.down.is_none() && cheb(u.pos, bp) <= 1);
+            if !tended {
+                continue;
+            }
+            let n = k + 1;
+            if !self.beacons[k].paid {
+                if self.glass >= RELIGHT_COST {
+                    self.glass -= RELIGHT_COST;
+                    self.beacons[k].paid = true;
+                    self.say(format!("Beacon {n}: engineer's cracked the casing. Don't breathe on it."));
+                } else if self.tick % 100 == 0 {
+                    self.say(format!("Beacon {n} needs {RELIGHT_COST} Driftglass. We have less. Mine more."));
+                }
+                continue;
+            }
+            self.beacons[k].progress += 1;
+            if self.beacons[k].progress >= RELIGHT_TICKS {
+                let b = &mut self.beacons[k];
+                b.lit = true;
+                b.hp = BEACON_HP;
+                b.progress = 0;
+                b.paid = false;
+                self.resolve += BEACON_RESOLVE;
+                let lit = self.beacons_lit();
+                self.say(format!("Beacon {n} is lit. {lit} of {BEACON_COUNT}. Small mercies."));
+                if lit == BEACON_COUNT {
+                    self.say("That's all four. Whatever is out there just noticed.");
+                }
+            }
+        }
+    }
+
+    fn hit_beacon(&mut self, k: usize) {
+        let n = k + 1;
+        let first = self.beacons[k].hp == BEACON_HP;
+        self.beacons[k].hp -= 4;
+        if self.beacons[k].hp <= 0 {
+            let b = &mut self.beacons[k];
+            b.lit = false;
+            b.hp = 0;
+            b.progress = 0;
+            b.paid = false;
+            self.resolve -= BEACON_RESOLVE;
+            self.say(format!("Beacon {n} has gone dark. The Hollow ate the light."));
+        } else if first {
+            self.say(format!("The Hollow are chewing on Beacon {n}."));
+        }
+    }
+
+    fn nearest_lit_beacon(&self, from: (i32, i32), range: i32) -> Option<usize> {
+        let mut best: Option<(usize, i32)> = None;
+        for (k, b) in self.beacons.iter().enumerate() {
+            let d = cheb(from, b.pos);
+            if b.lit && d <= range && best.map_or(true, |(_, bd)| d < bd) {
+                best = Some((k, d));
+            }
+        }
+        best.map(|(k, _)| k)
     }
 
     fn run_surge_timer(&mut self) {
@@ -719,6 +886,19 @@ impl Game {
                             self.hull = self.hull.min(self.hull_max);
                             self.foes[i].cd = 6;
                         }
+                    } else if let Some(k) = self.nearest_lit_beacon(p, 8) {
+                        // no crew nearby: corrode a lit Beacon instead
+                        let bp = self.beacons[k].pos;
+                        if cheb(p, bp) <= 1 {
+                            if self.foes[i].cd == 0 {
+                                self.hit_beacon(k);
+                                self.foes[i].cd = 6;
+                            }
+                        } else if moving {
+                            if let Some(np) = self.step_toward(p, bp, 1) {
+                                self.foes[i].pos = np;
+                            }
+                        }
                     } else if moving {
                         if let Some(np) = self.step_toward(p, SHIP, 3) {
                             self.foes[i].pos = np;
@@ -770,9 +950,14 @@ impl Game {
             self.resolve += 10;
             let n = self.surges_cleared;
             self.say(format!("Surge {n} cleared. Crew morale ticks up."));
-            if n >= WIN_SURGES {
-                self.status = Status::Won;
-                self.say("Captain's Log: the lane holds. We do not fail.");
+            if self.final_surge {
+                self.final_surge = false;
+                if self.beacons_lit() == BEACON_COUNT {
+                    self.status = Status::Won;
+                    self.say("Captain's Log: four lights, one lane, still here. We do not fail.");
+                } else {
+                    self.say("We held, but a Beacon went dark on the way. Relight it and wait for the next one.");
+                }
             }
         }
         self.resolve = self.resolve.min(100);
@@ -916,13 +1101,215 @@ mod tests {
         assert_eq!(g.tick, t + 1);
     }
 
+    // ----------------------------------------------------- beacons
+
+    /// A fresh game with no crew, one Engineer next to Beacon 0, and
+    /// plenty of Driftglass.
+    fn beacon_fixture() -> Game {
+        let mut g = Game::new(11);
+        g.units.clear();
+        g.glass = 200;
+        let bp = g.beacons[0].pos;
+        let stand = g.standing_spot(bp, SHIP);
+        assert!(cheb(stand, bp) == 1, "Beacon 0 must have a standing spot");
+        g.spawn_unit(Kind::Engineer, stand);
+        g
+    }
+
+    #[test]
+    fn beacons_are_placed_on_bare_ground_at_increasing_distance() {
+        for seed in 0..40 {
+            let g = Game::new(seed);
+            assert_eq!(g.beacons.len(), BEACON_COUNT);
+            let mut last = 0;
+            for b in &g.beacons {
+                assert!(g.tiles[idx(b.pos)] == Tile::Ground, "seed {seed}: beacon not on bare ground");
+                assert!(!b.lit);
+                let d = cheb(b.pos, SHIP);
+                assert!(d > last, "seed {seed}: distances must increase");
+                last = d;
+            }
+        }
+    }
+
+    #[test]
+    fn engineer_relights_a_beacon_over_eight_seconds_for_thirty_glass() {
+        let mut g = beacon_fixture();
+        let resolve = g.resolve;
+        for _ in 0..40 {
+            g.update();
+        }
+        assert!(!g.beacons[0].lit);
+        assert!(g.beacons[0].progress > 0 && g.beacons[0].progress < RELIGHT_TICKS);
+        assert_eq!(g.glass, 200 - RELIGHT_COST);
+        for _ in 0..60 {
+            g.update();
+        }
+        assert!(g.beacons[0].lit);
+        assert_eq!(g.beacons[0].hp, BEACON_HP);
+        assert_eq!(g.glass, 200 - RELIGHT_COST, "relight costs 30 once");
+        assert_eq!(g.resolve, resolve + BEACON_RESOLVE);
+        assert_eq!(g.beacons_lit(), 1);
+    }
+
+    #[test]
+    fn relight_needs_an_engineer_and_enough_driftglass() {
+        // no engineer nearby: nothing happens
+        let mut g = beacon_fixture();
+        g.units.clear();
+        for _ in 0..120 {
+            g.update();
+        }
+        assert!(!g.beacons[0].lit && g.beacons[0].progress == 0 && g.glass == 200);
+        // engineer but too little Driftglass: work does not start
+        let mut g = beacon_fixture();
+        g.glass = RELIGHT_COST - 1;
+        for _ in 0..120 {
+            g.update();
+        }
+        assert!(!g.beacons[0].lit && g.beacons[0].progress == 0);
+        assert_eq!(g.glass, RELIGHT_COST - 1);
+    }
+
+    #[test]
+    fn ordering_an_engineer_onto_a_beacon_walks_to_its_side() {
+        let mut g = Game::new(11);
+        g.units.clear();
+        g.spawn_unit(Kind::Engineer, (SHIP.0 + 3, SHIP.1));
+        g.units[0].selected = true;
+        let bp = g.beacons[0].pos;
+        g.apply(Command::Move(bp));
+        let Order::Move(dest) = g.units[0].order else { panic!("expected a move order") };
+        assert!(dest != bp && cheb(dest, bp) == 1);
+    }
+
+    #[test]
+    fn lit_beacons_speed_up_wake_decay() {
+        let decayed = |lit: usize| {
+            let mut g = Game::new(2);
+            g.units.clear();
+            g.wake = 50.0;
+            g.tick = 49;
+            for b in g.beacons.iter_mut().take(lit) {
+                b.lit = true;
+                b.hp = BEACON_HP;
+            }
+            g.update();
+            50.0 - g.wake
+        };
+        assert_eq!(decayed(0), 1.0);
+        assert_eq!(decayed(2), 2.0);
+        assert!(decayed(4) > decayed(1));
+    }
+
+    #[test]
+    fn hollow_corrode_a_lit_beacon_until_it_goes_dark() {
+        let mut g = Game::new(11);
+        g.units.clear();
+        g.beacons[0].lit = true;
+        g.beacons[0].hp = BEACON_HP;
+        let resolve = g.resolve;
+        let spot = g.standing_spot(g.beacons[0].pos, SHIP);
+        g.add_foe(spot, 0);
+        let mut chewed = false;
+        for _ in 0..400 {
+            g.update();
+            chewed |= g.beacons[0].hp < BEACON_HP;
+            if !g.beacons[0].lit {
+                break;
+            }
+        }
+        assert!(chewed, "the Hollow should damage the Beacon first");
+        assert!(!g.beacons[0].lit, "a destroyed Beacon goes dark again");
+        assert_eq!(g.resolve, resolve - BEACON_RESOLVE);
+        assert!(g.log.iter().any(|l| l.contains("gone dark")));
+    }
+
+    #[test]
+    fn hollow_ignore_unlit_beacons() {
+        let mut g = Game::new(11);
+        g.units.clear();
+        let spot = g.standing_spot(g.beacons[0].pos, SHIP);
+        g.add_foe(spot, 0);
+        for _ in 0..200 {
+            g.update();
+        }
+        assert_eq!(g.beacons[0].hp, 0);
+        assert!(!g.log.iter().any(|l| l.contains("chewing")));
+    }
+
+    #[test]
+    fn final_surge_is_the_first_surge_after_all_beacons_are_lit() {
+        // beacons not all lit: an ordinary surge
+        let mut g = Game::new(4);
+        g.units.clear();
+        g.tick = 1200;
+        g.schedule_surge();
+        assert!(g.surge.is_some() && !g.final_surge);
+
+        // all lit: the next surge is the final one
+        let mut g = Game::new(4);
+        g.units.clear();
+        for b in g.beacons.iter_mut() {
+            b.lit = true;
+            b.hp = BEACON_HP;
+        }
+        g.tick = 1200;
+        g.schedule_surge();
+        assert!(g.surge.is_some() && g.final_surge);
+        assert!(g.log.iter().any(|l| l.contains("FINAL SURGE")));
+    }
+
+    #[test]
+    fn win_needs_all_beacons_lit_and_the_final_surge_cleared() {
+        // clearing plenty of ordinary surges no longer wins
+        let mut g = Game::new(4);
+        g.units.clear();
+        for _ in 0..5 {
+            g.surge_live = true;
+            g.resolve_wave();
+        }
+        assert_eq!(g.status, Status::Playing);
+        assert_eq!(g.surges_cleared, 5);
+
+        // final surge cleared with every Beacon lit: win
+        let mut g = Game::new(4);
+        g.units.clear();
+        for b in g.beacons.iter_mut() {
+            b.lit = true;
+            b.hp = BEACON_HP;
+        }
+        g.final_surge = true;
+        g.surge_live = true;
+        g.add_foe((0, 0), 0);
+        g.resolve_wave();
+        assert_eq!(g.status, Status::Playing, "surge is still live while Hollow remain");
+        g.foes.clear();
+        g.resolve_wave();
+        assert_eq!(g.status, Status::Won);
+
+        // final surge cleared but a Beacon went dark: no win, keep going
+        let mut g = Game::new(4);
+        g.units.clear();
+        for b in g.beacons.iter_mut().take(3) {
+            b.lit = true;
+            b.hp = BEACON_HP;
+        }
+        g.final_surge = true;
+        g.surge_live = true;
+        g.resolve_wave();
+        assert_eq!(g.status, Status::Playing);
+        assert!(!g.final_surge);
+    }
+
     /// Everything that matters about the sim state, as a comparable string.
     fn fingerprint(g: &Game) -> String {
         format!(
-            "{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}",
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}",
             g.tiles,
             g.units,
             g.foes,
+            g.beacons,
             g.surge,
             g.hull,
             g.hull_max,

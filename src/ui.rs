@@ -12,7 +12,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::sim::{idx, in_bounds, Command, Game, Kind, Status, Tile, H, SHIP, W, WIN_SURGES};
+use crate::sim::{
+    idx, in_bounds, Command, Game, Kind, Status, Tile, BEACON_COUNT, BEACON_HP, H, RELIGHT_TICKS, SHIP, W,
+};
 
 /// What a key press asks of the program.
 pub enum KeyAction {
@@ -163,6 +165,31 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
                 }
             }
         }
+        // beacons: o = dark, o (bold yellow) = being relit, * = lit (orange when corroded)
+        for b in &g.beacons {
+            if let Some((x, y)) = to_scr(b.pos) {
+                let (ch, style) = if b.lit {
+                    let col = if b.hp * 2 < BEACON_HP { Color::Rgb(230, 120, 40) } else { Color::LightYellow };
+                    ('*', Style::new().fg(col).add_modifier(Modifier::BOLD))
+                } else if b.progress > 0 {
+                    ('o', Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                } else {
+                    ('o', Style::new().fg(Color::Rgb(150, 60, 60)))
+                };
+                buf[(x, y)].set_char(ch).set_style(style);
+                // relight progress: a five-cell bar just above the Beacon
+                if !b.lit && b.progress > 0 {
+                    let filled = (b.progress * 5 / RELIGHT_TICKS) as i32;
+                    for i in 0..5 {
+                        let bar_pos = (b.pos.0 - 2 + i, b.pos.1 - 1);
+                        if let Some((bx, by)) = to_scr(bar_pos) {
+                            let (c, col) = if i < filled { ('█', Color::Yellow) } else { ('░', Color::DarkGray) };
+                            buf[(bx, by)].set_char(c).set_fg(col);
+                        }
+                    }
+                }
+            }
+        }
         // hollow
         for foe in &g.foes {
             if let Some((x, y)) = to_scr(foe.pos) {
@@ -213,9 +240,9 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
             Span::raw(format!(" Resolve {} ", bar(g.resolve as f32, 100.0, 12))),
         ]),
         Line::from(Span::styled(format!("   {label}"), Style::new().fg(label_col))),
-        Line::from(""),
         Line::from(format!(" Crew {}  Hollow {}", g.units.len(), g.foes.len())),
-        Line::from(format!(" Surges held {}/{}", g.surges_cleared, WIN_SURGES)),
+        Line::from(format!(" Beacons lit {}/{}", g.beacons_lit(), BEACON_COUNT)),
+        Line::from(format!(" Surges held {}", g.surges_cleared)),
         Line::from(format!(" Selected {selected}")),
         Line::from(""),
         Line::from(format!(" [1] Cadet     {}", Kind::Cadet.cost())),
