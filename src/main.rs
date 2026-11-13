@@ -69,15 +69,31 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 _ => {}
             }
         }
-        if last.elapsed() >= tick {
+        // Fixed timestep: run every tick that is due, so a slow frame doesn't
+        // slow the game down. Capped so a long stall can't trigger a spiral.
+        let mut catch_up = 0;
+        while last.elapsed() >= tick && catch_up < MAX_CATCH_UP_TICKS {
             g.update();
-            last = Instant::now();
+            last += tick;
+            catch_up += 1;
+        }
+        if last.elapsed() >= tick {
+            last = Instant::now(); // fell too far behind; drop the backlog
         }
     }
 }
 
+/// Most simulation ticks to run in one pass of the loop.
+const MAX_CATCH_UP_TICKS: u32 = 5;
+
 fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
+    // ratatui's panic hook restores the screen; also release mouse capture.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        hook(info);
+    }));
     execute!(io::stdout(), EnableMouseCapture)?;
     let res = run(&mut terminal);
     execute!(io::stdout(), DisableMouseCapture)?;

@@ -338,7 +338,7 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         let w = msg.len() as u16 + 4;
         let r = Rect::new(
             map_r.x + map_r.width.saturating_sub(w) / 2,
-            map_r.y + map_r.height / 2 - 1,
+            map_r.y + (map_r.height / 2).saturating_sub(1),
             w.min(map_r.width),
             3,
         );
@@ -432,5 +432,142 @@ pub fn handle_key(
             KeyAction::None
         }
         _ => KeyAction::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::MouseEvent;
+
+    // 100x30 terminal: the map interior starts at (1, 1) and the default
+    // camera sits at (8, 12), so world (wx, wy) is screen (wx - 7, wy - 11).
+    fn area() -> Rect {
+        Rect::new(0, 0, 100, 30)
+    }
+
+    fn mouse(kind: MouseEventKind, wx: i32, wy: i32) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: (wx - 7) as u16,
+            row: (wy - 11) as u16,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn key(ui: &mut Ui, g: &Game, c: char) -> KeyAction {
+        handle_key(ui, g, KeyCode::Char(c), KeyModifiers::NONE, area())
+    }
+
+    #[test]
+    fn keys_become_commands_and_quit() {
+        let (mut ui, g) = (Ui::new(), Game::new(1));
+        assert!(matches!(
+            key(&mut ui, &g, '1'),
+            KeyAction::Command(Command::Train(Kind::Cadet))
+        ));
+        assert!(matches!(
+            key(&mut ui, &g, '3'),
+            KeyAction::Command(Command::Train(Kind::Marine))
+        ));
+        assert!(matches!(
+            key(&mut ui, &g, ' '),
+            KeyAction::Command(Command::TogglePause)
+        ));
+        assert!(matches!(
+            key(&mut ui, &g, 'c'),
+            KeyAction::Command(Command::SelectAll)
+        ));
+        assert!(matches!(key(&mut ui, &g, 'q'), KeyAction::Quit));
+        let ctrl_c = handle_key(
+            &mut ui,
+            &g,
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            area(),
+        );
+        assert!(matches!(ctrl_c, KeyAction::Quit));
+    }
+
+    #[test]
+    fn arrows_pan_the_camera_without_touching_the_game() {
+        let (mut ui, g) = (Ui::new(), Game::new(1));
+        let before = ui.cam;
+        let a = handle_key(&mut ui, &g, KeyCode::Right, KeyModifiers::NONE, area());
+        assert!(matches!(a, KeyAction::None));
+        assert_eq!(ui.cam, (before.0 + 4, before.1));
+    }
+
+    #[test]
+    fn attack_move_needs_a_marine_and_clears_on_esc() {
+        let (mut ui, mut g) = (Ui::new(), Game::new(1));
+        key(&mut ui, &g, 'a');
+        assert!(!ui.pending_amove, "no marine selected, nothing to prompt");
+        g.apply(Command::SelectAll);
+        key(&mut ui, &g, 'a');
+        assert!(ui.pending_amove);
+        let esc = handle_key(&mut ui, &g, KeyCode::Esc, KeyModifiers::NONE, area());
+        assert!(matches!(esc, KeyAction::Command(Command::Deselect)));
+        assert!(!ui.pending_amove);
+    }
+
+    #[test]
+    fn right_click_issues_move_or_attack() {
+        let (mut ui, mut g) = (Ui::new(), Game::new(1));
+        let ground = (SHIP.0 + 6, SHIP.1 + 4);
+        let c = handle_mouse(
+            &mut ui,
+            &g,
+            mouse(MouseEventKind::Down(MouseButton::Right), ground.0, ground.1),
+            area(),
+        );
+        assert_eq!(c, Some(Command::Move(ground)));
+
+        let foe_at = (SHIP.0 + 9, SHIP.1 + 6);
+        g.add_foe(foe_at, 0);
+        let id = g.foes[0].id;
+        let c = handle_mouse(
+            &mut ui,
+            &g,
+            mouse(MouseEventKind::Down(MouseButton::Right), foe_at.0, foe_at.1),
+            area(),
+        );
+        assert_eq!(c, Some(Command::Attack { id, at: foe_at }));
+    }
+
+    #[test]
+    fn pending_attack_move_click_orders_and_clears() {
+        let (mut ui, g) = (Ui::new(), Game::new(1));
+        ui.pending_amove = true;
+        let t = (SHIP.0 + 6, SHIP.1 + 4);
+        let c = handle_mouse(
+            &mut ui,
+            &g,
+            mouse(MouseEventKind::Down(MouseButton::Left), t.0, t.1),
+            area(),
+        );
+        assert_eq!(c, Some(Command::AttackMove(t)));
+        assert!(!ui.pending_amove);
+    }
+
+    #[test]
+    fn drag_box_becomes_a_normalised_selection() {
+        let (mut ui, g) = (Ui::new(), Game::new(1));
+        let (a, b) = ((SHIP.0 + 8, SHIP.1 + 5), (SHIP.0 + 2, SHIP.1 + 1));
+        let down = mouse(MouseEventKind::Down(MouseButton::Left), a.0, a.1);
+        assert_eq!(handle_mouse(&mut ui, &g, down, area()), None);
+        let drag = mouse(MouseEventKind::Drag(MouseButton::Left), b.0, b.1);
+        assert_eq!(handle_mouse(&mut ui, &g, drag, area()), None);
+        assert!(ui.drag.is_some());
+        let up = mouse(MouseEventKind::Up(MouseButton::Left), b.0, b.1);
+        // dragging up-and-left must still give min <= max
+        assert_eq!(
+            handle_mouse(&mut ui, &g, up, area()),
+            Some(Command::SelectBox {
+                min: (SHIP.0 + 2, SHIP.1 + 1),
+                max: (SHIP.0 + 8, SHIP.1 + 5),
+            })
+        );
+        assert!(ui.drag.is_none());
     }
 }

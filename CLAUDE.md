@@ -22,7 +22,7 @@ The simulation must stay deterministic.
 Sim code must not import Ratatui or crossterm. Rendering, input decoding, camera and drag-box state belong in the UI layer.
 
 ### Testing and commits
-- `cargo test` must pass before any commit.
+- `cargo test` must pass before any commit. So must `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`; CI (`.github/workflows/ci.yml`) runs all three.
 - Every new mechanic gets a headless test (no terminal, drive `Game` directly).
 
 ### Dependencies

@@ -216,7 +216,12 @@ impl Game {
             wake: 0.0,
             resolve: 60,
             tick: 0,
-            rng: seed | 1,
+            // Scramble so neighbouring seeds (2k, 2k+1) give different games;
+            // xorshift must never start at zero.
+            rng: match seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) {
+                0 => 1,
+                s => s,
+            },
             surge: None,
             surge_live: false,
             surges_launched: 0,
@@ -567,7 +572,7 @@ impl Game {
         }
     }
 
-    fn add_foe(&mut self, pos: (i32, i32), cd: u32) {
+    pub(crate) fn add_foe(&mut self, pos: (i32, i32), cd: u32) {
         let id = self.next_foe_id;
         self.next_foe_id += 1;
         self.foes.push(Foe {
@@ -868,7 +873,7 @@ impl Game {
             if self.glass < 1 {
                 continue;
             }
-            // 2. mend the most worn crewmate nearby
+            // 2. mend the first worn crewmate nearby
             if let Some(i) = self.units.iter().position(|u| {
                 u.down.is_none()
                     && cheb(u.pos, ep) <= 2
