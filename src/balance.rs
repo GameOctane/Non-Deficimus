@@ -286,10 +286,19 @@ fn balance_targets_hold() {
         turtle.median_ticks / 10
     );
 
-    // Winning is NOT asserted: these bots win only ~2% of games, so a win
-    // rate would just be noise. Judge winnability by playing it (and by the
-    // report). Do assert that a Beacon-running crew lasts a fair while.
+    // Winnable but not trivial, even for a mediocre bot (it wins roughly a
+    // third of games at the time of writing; a human should do better).
     let player = run_all(Bot::Player);
+    assert!(
+        player.wins >= 3,
+        "winning must be possible (bot won {} of {SEEDS})",
+        player.wins
+    );
+    assert!(
+        player.wins <= SEEDS as usize * 3 / 4,
+        "winning must not be trivial (bot won {} of {SEEDS})",
+        player.wins
+    );
     assert!(
         player.median_ticks >= 3_000,
         "a crew working the Beacons should last ~5 min (median {}s)",

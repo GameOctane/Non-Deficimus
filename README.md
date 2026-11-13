@@ -18,13 +18,13 @@ You need a recent [Rust toolchain](https://rustup.rs) and a terminal with mouse 
 cargo run --release
 ```
 
-A terminal of at least 100x30 is recommended.
+A terminal of at least 100x30 is recommended. You start with four crew and **can train more** with `1` `2` `3`; a briefing screen explains this when the game opens.
 
 ## How to play
 
 **Hold and push.** Harvesting raises the sector's **Wake** meter. When Wake crosses a threshold (or time runs out), a Hollow **surge** hits your base, with about 15 seconds of warning. Surges keep getting bigger.
 
-**Win:** relight all four **Beacons**, then survive the final surge (the first one to launch after the fourth light comes on). If a Beacon goes dark before that surge is cleared, you'll have to relight it and hold out for the next one.
+**Win:** relight all four **Beacons**, then survive the final surge. It is called about 30 seconds after the fourth light comes on (plus the usual warning), so you won't be left waiting. If a Beacon goes dark before the surge is cleared, you'll have to relight it and hold out for the next one. The sidebar always shows how long until the next surge at the latest; Wake can bring it sooner.
 
 **Lose:** the hull is destroyed or Resolve hits zero.
 
@@ -65,6 +65,7 @@ Four dead Beacons sit around the sector, each farther from the ship than the las
 | `c` | Select all crew |
 | Arrows | Pan the map |
 | `Esc` | Deselect (also cancels a pending attack-move) |
+| `?` | Show the Captain's briefing again |
 | `Space` | Pause |
 | `q` | Quit |
 

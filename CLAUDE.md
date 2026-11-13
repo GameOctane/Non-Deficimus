@@ -49,7 +49,7 @@ Do NOT add Pilots, Systems Officers, Drifters, multiplayer, or a campaign yet.
   - Report: `cargo test --release balance_report -- --ignored --nocapture`
   - Trace how games end: `cargo test --release balance_trace -- --ignored --nocapture`
   - Floor targets (CI runs this): `cargo test --release balance_targets_hold -- --ignored`
-- Retune with the report, not by feel. Findings so far: a tight group of Marines beats a spread-out one; idle Marines chasing Hollow (even leashed) did worse than standing together; the Player bot wins only ~2% of games, so "winnable by a good human" is unproven and needs real playtesting.
+- Retune with the report, not by feel. Findings so far: a tight group of Marines beats a spread-out one; idle Marines chasing Hollow (even leashed) did worse than standing together; straighter pathing (A*) sped up the economy and needed Wake gain retuned; a human playtest found that new players never realised they could train crew, hence the opening briefing. The Player bot wins about a third of games at current settings (steeply sensitive to Wake gain: 0.12 gave ~50%, 0.14 ~12%), so retune with the report, and playtest.
 
 ## Not yet done
 

@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph},
+    widgets::{Block, Clear, Paragraph, Wrap},
 };
 
 use crate::sim::{
@@ -29,6 +29,8 @@ pub struct Ui {
     pub cam: (i32, i32),
     pub drag: Option<((u16, u16), (u16, u16))>,
     pub pending_amove: bool,
+    /// The captain's briefing is on screen (shown at the start, and on `?`).
+    pub show_help: bool,
 }
 
 impl Ui {
@@ -37,6 +39,7 @@ impl Ui {
             cam: (SHIP.0 - 40, SHIP.1 - 12),
             drag: None,
             pending_amove: false,
+            show_help: true,
         }
     }
 
@@ -105,6 +108,99 @@ fn tier_text(t: ResolveTier) -> String {
         "" => t.name().to_string(),
         effect => format!("{}: {effect}", t.name()),
     }
+}
+
+/// Where the next surge stands: announced (with its countdown), live, or
+/// the latest it can arrive on the timer. Wake can bring it sooner.
+fn surge_line(g: &Game) -> Line<'static> {
+    let warn = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
+    if let Some(s) = &g.surge {
+        let tag = if g.final_surge {
+            "FINAL SURGE"
+        } else {
+            "SURGE"
+        };
+        let secs = s.in_ticks.div_ceil(10);
+        Line::from(Span::styled(format!(" {tag} in {secs}s!"), warn))
+    } else if g.surge_live {
+        let tag = if g.final_surge {
+            "FINAL SURGE"
+        } else {
+            "Surge"
+        };
+        Line::from(Span::styled(format!(" {tag} is here"), warn))
+    } else {
+        let secs = g.surge_eta().unwrap_or(0).div_ceil(10);
+        let text = format!(" Next surge by {}:{:02}", secs / 60, secs % 60);
+        let style = if g.all_lit_since.is_some() {
+            Style::new().fg(Color::Yellow)
+        } else {
+            Style::new().fg(Color::DarkGray)
+        };
+        Line::from(Span::styled(text, style))
+    }
+}
+
+/// The opening briefing: the goal, how to get more crew, and the basics.
+fn draw_briefing(f: &mut Frame, area: Rect) {
+    let head = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let key = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let dim = Style::new().fg(Color::DarkGray);
+    let lines = vec![
+        Line::from(Span::styled("\"We do not fail.\"", head)),
+        Line::from(""),
+        Line::from(
+            "The ship is down in a dead sector. Relight all four Beacons (o), then survive the final surge.",
+        ),
+        Line::from(""),
+        Line::from(Span::styled("YOU CAN TRAIN MORE CREW. Press:", head)),
+        Line::from(vec![
+            Span::styled("  1  ", key),
+            Span::raw("Cadet    mines Driftglass (and wakes the Hollow)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  2  ", key),
+            Span::raw("Engineer repairs, recovers the Down, relights Beacons"),
+        ]),
+        Line::from(vec![
+            Span::styled("  3  ", key),
+            Span::raw("Marine   fights"),
+        ]),
+        Line::from("Crew costs Driftglass. Start with a few Marines: a surge is coming."),
+        Line::from(""),
+        Line::from(Span::styled("Beacons", head)),
+        Line::from("Park an Engineer next to a dark Beacon: 30 Driftglass, about 8 seconds."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Drag", key),
+            Span::raw(" to select.  "),
+            Span::styled("Right-click", key),
+            Span::raw(" to order.  "),
+            Span::styled("Arrows", key),
+            Span::raw(" pan.  "),
+            Span::styled("?", key),
+            Span::raw(" shows this again."),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Press any key to begin.", dim)),
+    ];
+    let w = area.width.min(74);
+    let h = (lines.len() as u16 + 4).min(area.height);
+    let r = Rect::new(
+        area.x + area.width.saturating_sub(w) / 2,
+        area.y + area.height.saturating_sub(h) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: true }).block(
+            Block::bordered()
+                .title(" Captain's briefing ")
+                .padding(ratatui::widgets::Padding::horizontal(1)),
+        ),
+        r,
+    );
 }
 
 fn rects(area: Rect) -> (Rect, Rect, Rect) {
@@ -294,8 +390,13 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
             Style::new().fg(label_col),
         )),
         Line::from(format!(" Crew {}  Hollow {}", g.units.len(), g.foes.len())),
-        Line::from(format!(" Beacons lit {}/{}", g.beacons_lit(), BEACON_COUNT)),
-        Line::from(format!(" Surges held {}", g.surges_cleared)),
+        Line::from(format!(
+            " Beacons {}/{}  Held {}",
+            g.beacons_lit(),
+            BEACON_COUNT,
+            g.surges_cleared
+        )),
+        surge_line(g),
         Line::from(format!(" Selected {selected}")),
         Line::from(""),
         Line::from(format!(" [1] Cadet     {}", g.train_cost(Kind::Cadet))),
@@ -311,7 +412,7 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         Line::from(Span::styled(" RMB on H: focus fire", hint)),
         Line::from(Span::styled(" a: attack-move  h: hold", hint)),
         Line::from(Span::styled(" c: all  arrows: pan", hint)),
-        Line::from(Span::styled(" space: pause  q: quit", hint)),
+        Line::from(Span::styled(" ?: help  spc: pause  q: quit", hint)),
     ];
     let title = if g.paused {
         " Ship (PAUSED) "
@@ -336,6 +437,10 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         Paragraph::new(log_lines).block(Block::bordered().title(" Comms ")),
         log_r,
     );
+
+    if ui.show_help {
+        draw_briefing(f, f.area());
+    }
 
     // end overlay
     if g.status != Status::Playing {
@@ -364,6 +469,13 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
 // --------------------------------------------------------------- input
 
 pub fn handle_mouse(ui: &mut Ui, g: &Game, m: MouseEvent, area: Rect) -> Option<Command> {
+    if ui.show_help {
+        // a click closes the briefing and is otherwise ignored
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            ui.show_help = false;
+        }
+        return None;
+    }
     let (map_r, _, _) = rects(area);
     let inner = map_r.inner(Margin::new(1, 1));
     let inside = m.column >= inner.x
@@ -404,9 +516,24 @@ pub fn handle_key(
     let (map_r, _, _) = rects(area);
     let inner = map_r.inner(Margin::new(1, 1));
     let cam = ui.cam_for(inner);
+    if ui.show_help {
+        // any key closes the briefing and is otherwise ignored
+        ui.show_help = false;
+        let quit = matches!(code, KeyCode::Char('q'))
+            || (matches!(code, KeyCode::Char('c')) && mods.contains(KeyModifiers::CONTROL));
+        return if quit {
+            KeyAction::Quit
+        } else {
+            KeyAction::None
+        };
+    }
     match code {
         KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => KeyAction::Quit,
         KeyCode::Char('q') => KeyAction::Quit,
+        KeyCode::Char('?') => {
+            ui.show_help = true;
+            KeyAction::None
+        }
         KeyCode::Esc => {
             ui.pending_amove = false;
             KeyAction::Command(Command::Deselect)
@@ -455,6 +582,13 @@ mod tests {
         Rect::new(0, 0, 100, 30)
     }
 
+    /// A Ui with the opening briefing already dismissed.
+    fn quiet_ui() -> Ui {
+        let mut ui = Ui::new();
+        ui.show_help = false;
+        ui
+    }
+
     fn mouse(kind: MouseEventKind, wx: i32, wy: i32) -> MouseEvent {
         MouseEvent {
             kind,
@@ -470,7 +604,7 @@ mod tests {
 
     #[test]
     fn keys_become_commands_and_quit() {
-        let (mut ui, g) = (Ui::new(), Game::new(1));
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
         assert!(matches!(
             key(&mut ui, &g, '1'),
             KeyAction::Command(Command::Train(Kind::Cadet))
@@ -500,7 +634,7 @@ mod tests {
 
     #[test]
     fn arrows_pan_the_camera_without_touching_the_game() {
-        let (mut ui, g) = (Ui::new(), Game::new(1));
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
         let before = ui.cam;
         let a = handle_key(&mut ui, &g, KeyCode::Right, KeyModifiers::NONE, area());
         assert!(matches!(a, KeyAction::None));
@@ -509,7 +643,7 @@ mod tests {
 
     #[test]
     fn attack_move_needs_a_marine_and_clears_on_esc() {
-        let (mut ui, mut g) = (Ui::new(), Game::new(1));
+        let (mut ui, mut g) = (quiet_ui(), Game::new(1));
         key(&mut ui, &g, 'a');
         assert!(!ui.pending_amove, "no marine selected, nothing to prompt");
         g.apply(Command::SelectAll);
@@ -522,7 +656,7 @@ mod tests {
 
     #[test]
     fn right_click_issues_move_or_attack() {
-        let (mut ui, mut g) = (Ui::new(), Game::new(1));
+        let (mut ui, mut g) = (quiet_ui(), Game::new(1));
         let ground = (SHIP.0 + 6, SHIP.1 + 4);
         let c = handle_mouse(
             &mut ui,
@@ -546,7 +680,7 @@ mod tests {
 
     #[test]
     fn pending_attack_move_click_orders_and_clears() {
-        let (mut ui, g) = (Ui::new(), Game::new(1));
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
         ui.pending_amove = true;
         let t = (SHIP.0 + 6, SHIP.1 + 4);
         let c = handle_mouse(
@@ -560,8 +694,66 @@ mod tests {
     }
 
     #[test]
-    fn drag_box_becomes_a_normalised_selection() {
+    fn the_briefing_shows_first_and_any_key_closes_it_without_acting() {
         let (mut ui, g) = (Ui::new(), Game::new(1));
+        assert!(ui.show_help, "new players see the briefing first");
+        // pressing '1' dismisses it but does NOT train by accident
+        assert!(matches!(key(&mut ui, &g, '1'), KeyAction::None));
+        assert!(!ui.show_help);
+        // now keys work normally
+        assert!(matches!(
+            key(&mut ui, &g, '1'),
+            KeyAction::Command(Command::Train(Kind::Cadet))
+        ));
+    }
+
+    #[test]
+    fn question_mark_reopens_the_briefing_and_q_still_quits_through_it() {
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
+        assert!(matches!(key(&mut ui, &g, '?'), KeyAction::None));
+        assert!(ui.show_help);
+        assert!(matches!(key(&mut ui, &g, 'q'), KeyAction::Quit));
+        let mut ui = Ui::new();
+        let ctrl_c = handle_key(
+            &mut ui,
+            &g,
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            area(),
+        );
+        assert!(matches!(ctrl_c, KeyAction::Quit));
+    }
+
+    #[test]
+    fn a_click_closes_the_briefing_without_ordering_anything() {
+        let (mut ui, g) = (Ui::new(), Game::new(1));
+        let at = (SHIP.0 + 6, SHIP.1 + 4);
+        let click = mouse(MouseEventKind::Down(MouseButton::Right), at.0, at.1);
+        assert_eq!(handle_mouse(&mut ui, &g, click, area()), None);
+        assert!(!ui.show_help);
+        assert_eq!(
+            handle_mouse(&mut ui, &g, click, area()),
+            Some(Command::Move(at))
+        );
+    }
+
+    #[test]
+    fn the_briefing_and_every_screen_draw_on_small_and_large_terminals() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let g = Game::new(1);
+        for (w, h) in [(100, 30), (140, 50), (60, 20), (20, 6), (1, 1)] {
+            for show_help in [true, false] {
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                let mut ui = Ui::new();
+                ui.show_help = show_help;
+                terminal.draw(|f| draw(f, &g, &ui)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn drag_box_becomes_a_normalised_selection() {
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
         let (a, b) = ((SHIP.0 + 8, SHIP.1 + 5), (SHIP.0 + 2, SHIP.1 + 1));
         let down = mouse(MouseEventKind::Down(MouseButton::Left), a.0, a.1);
         assert_eq!(handle_mouse(&mut ui, &g, down, area()), None);

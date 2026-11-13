@@ -3,7 +3,8 @@
 //! No rendering or terminal code lives here. Player input enters only
 //! through [`Command`] and [`Game::apply`].
 
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
 
 pub const W: i32 = 96;
 pub const H: i32 = 48;
@@ -41,13 +42,16 @@ pub const LAST_STAND_RESOLVE: i32 = 60;
 pub const RESOLVE_LOST_UNIT: i32 = 6;
 /// A surge is forced this many ticks after the last one, whatever the Wake.
 pub const SURGE_TIMER_TICKS: u64 = 1800;
+/// Once all four Beacons are lit, the final surge is called this many ticks
+/// later (plus the usual warning), so a finished crew isn't left waiting.
+pub const FINAL_SURGE_DELAY_TICKS: u64 = 300;
 /// Warning between a surge being announced and the Hollow arriving.
 pub const SURGE_WARNING_TICKS: u32 = 150;
 /// Wake needed for the first surge, and the extra needed for each later one.
 pub const WAKE_TRIGGER_FIRST: f32 = 25.0;
 pub const WAKE_TRIGGER_STEP: f32 = 12.0;
 /// Wake gained per Driftglass delivered.
-pub const WAKE_PER_GLASS: f32 = 0.15;
+pub const WAKE_PER_GLASS: f32 = 0.13;
 
 /// Hollow contacts in a surge, given how many have launched and the Wake.
 pub fn surge_size(launched: u32, wake: f32) -> u32 {
@@ -251,6 +255,8 @@ pub struct Game {
     /// True while the surge in flight is the final one (all Beacons were lit
     /// when it launched). Clearing it with all Beacons still lit wins.
     pub final_surge: bool,
+    /// Tick at which the fourth Beacon was lit (cleared if one goes dark).
+    pub all_lit_since: Option<u64>,
     /// The one-time last stand has already happened.
     pub last_stand_used: bool,
     pub hull: i32,
@@ -296,6 +302,7 @@ impl Game {
             foes: Vec::new(),
             beacons: Vec::new(),
             final_surge: false,
+            all_lit_since: None,
             last_stand_used: false,
             hull: 200,
             hull_max: 200,
@@ -444,16 +451,32 @@ impl Game {
         best.map_or(t, |(p, _)| p)
     }
 
-    /// BFS to the first tile within `range` of `to`; returns the next step.
+    /// A* to the first tile within `range` of `to`; returns the next step.
+    ///
+    /// Straight steps cost 10 and diagonals 14, so paths are the natural
+    /// straight-ish lines rather than the zig-zags a uniform-cost search can
+    /// produce when many routes are equally short. Integer costs and a
+    /// fixed tie-break keep it fully deterministic.
     pub fn step_toward(&self, from: (i32, i32), to: (i32, i32), range: i32) -> Option<(i32, i32)> {
         if cheb(from, to) <= range {
             return None;
         }
+        // Admissible: every step covers at most one tile of Chebyshev
+        // distance and costs at least 10.
+        let h = |p: (i32, i32)| ((cheb(p, to) - range).max(0)) * 10;
+        let mut dist = vec![i32::MAX; (W * H) as usize];
         let mut parent = vec![-1i32; (W * H) as usize];
-        let mut queue = VecDeque::new();
+        let mut heap = BinaryHeap::new();
+        dist[idx(from)] = 0;
         parent[idx(from)] = idx(from) as i32;
-        queue.push_back(from);
-        while let Some(cur) = queue.pop_front() {
+        // ordered by (f, h, index): lowest f first, then closest to goal
+        heap.push(Reverse((h(from), h(from), idx(from))));
+        while let Some(Reverse((f, _, ci))) = heap.pop() {
+            let cur = (ci as i32 % W, ci as i32 / W);
+            let g = dist[ci];
+            if f > g + h(cur) {
+                continue; // stale queue entry
+            }
             if cheb(cur, to) <= range {
                 let mut c = cur;
                 while parent[idx(c)] != idx(from) as i32 {
@@ -465,9 +488,14 @@ impl Game {
             for dy in -1..=1 {
                 for dx in -1..=1 {
                     let n = (cur.0 + dx, cur.1 + dy);
-                    if (dx, dy) != (0, 0) && self.walkable(n) && parent[idx(n)] < 0 {
-                        parent[idx(n)] = idx(cur) as i32;
-                        queue.push_back(n);
+                    if (dx, dy) == (0, 0) || !self.walkable(n) {
+                        continue;
+                    }
+                    let ng = g + if dx != 0 && dy != 0 { 14 } else { 10 };
+                    if ng < dist[idx(n)] {
+                        dist[idx(n)] = ng;
+                        parent[idx(n)] = ci as i32;
+                        heap.push(Reverse((ng + h(n), h(n), idx(n))));
                     }
                 }
             }
@@ -703,6 +731,7 @@ impl Game {
             let decay = 1.0 + 0.5 * self.beacons_lit() as f32;
             self.wake = (self.wake - decay).max(0.0);
         }
+        self.track_all_lit();
         self.schedule_surge();
         self.run_surge_timer();
         self.update_crew();
@@ -713,13 +742,35 @@ impl Game {
         self.resolve_wave();
     }
 
+    fn track_all_lit(&mut self) {
+        if self.beacons_lit() == BEACON_COUNT {
+            self.all_lit_since.get_or_insert(self.tick);
+        } else {
+            self.all_lit_since = None;
+        }
+    }
+
+    /// Ticks until a surge is forced, if none is already announced or live.
+    /// (A Wake trigger can bring it sooner.)
+    pub fn surge_eta(&self) -> Option<u64> {
+        if self.surge.is_some() || self.surge_live {
+            return None;
+        }
+        let timer = (self.last_surge + SURGE_TIMER_TICKS).saturating_sub(self.tick);
+        let eta = match self.all_lit_since {
+            Some(t) => timer.min((t + FINAL_SURGE_DELAY_TICKS).saturating_sub(self.tick)),
+            None => timer,
+        };
+        Some(eta)
+    }
+
     fn schedule_surge(&mut self) {
         if self.surge.is_some() || self.surge_live {
             return;
         }
         let wake_trigger =
             self.wake >= WAKE_TRIGGER_FIRST + WAKE_TRIGGER_STEP * self.surges_launched as f32;
-        let timer_trigger = self.tick - self.last_surge >= SURGE_TIMER_TICKS;
+        let timer_trigger = self.surge_eta() == Some(0);
         if wake_trigger || timer_trigger {
             let edge = self.rand(4) as u8;
             let count = surge_size(self.surges_launched, self.wake);
@@ -788,7 +839,9 @@ impl Game {
                     "Beacon {n} is lit. {lit} of {BEACON_COUNT}. Small mercies."
                 ));
                 if lit == BEACON_COUNT {
-                    self.say("That's all four. Whatever is out there just noticed.");
+                    self.say(
+                        "That's all four. Whatever is out there just noticed. Expect company soon.",
+                    );
                 }
             }
         }
@@ -1461,6 +1514,108 @@ mod tests {
         g.resolve_wave();
         assert_eq!(g.hull, 30, "no second last stand");
         assert_eq!(g.resolve, 95);
+    }
+
+    // ------------------------------------------- pathing and final surge
+
+    #[test]
+    fn paths_are_straight_lines_not_zig_zags() {
+        let mut g = Game::new(9);
+        g.tiles.fill(Tile::Ground);
+        g.beacons.clear();
+        // mostly sideways, a little down: used to wobble up-and-down for free
+        let (start, goal) = ((10, 10), (30, 14));
+        let mut pos = start;
+        let mut steps = 0;
+        while pos != goal {
+            let next = g.step_toward(pos, goal, 0).expect("path exists");
+            assert!(
+                next.1 >= pos.1,
+                "stepped up while heading down: {pos:?} -> {next:?}"
+            );
+            assert!(
+                next.0 > pos.0,
+                "stepped sideways without progress: {pos:?} -> {next:?}"
+            );
+            pos = next;
+            steps += 1;
+        }
+        assert_eq!(steps, 20, "still the shortest route");
+        // and a plain diagonal stays a diagonal
+        assert_eq!(g.step_toward((10, 10), (15, 15), 0), Some((11, 11)));
+    }
+
+    #[test]
+    fn paths_still_go_around_obstacles_and_respect_range() {
+        let mut g = Game::new(9);
+        g.tiles.fill(Tile::Ground);
+        g.beacons.clear();
+        // a wall with a gap at the bottom
+        for y in 0..40 {
+            g.tiles[idx((20, y))] = Tile::Rock;
+        }
+        let mut pos = (10, 10);
+        for _ in 0..200 {
+            match g.step_toward(pos, (30, 10), 0) {
+                Some(n) => pos = n,
+                None => break,
+            }
+        }
+        assert_eq!(pos, (30, 10), "found the way around the wall");
+        // within range already: no step
+        assert_eq!(g.step_toward((10, 10), (12, 10), 3), None);
+        // unreachable target: no step
+        for y in 0..H {
+            g.tiles[idx((20, y))] = Tile::Rock;
+        }
+        assert_eq!(g.step_toward((10, 10), (30, 10), 0), None);
+    }
+
+    #[test]
+    fn final_surge_is_called_shortly_after_the_fourth_beacon() {
+        let mut g = Game::new(4);
+        g.units.clear();
+        for b in g.beacons.iter_mut() {
+            b.lit = true;
+            b.hp = BEACON_HP;
+        }
+        // not before the delay...
+        for _ in 0..FINAL_SURGE_DELAY_TICKS - 5 {
+            g.update();
+        }
+        assert!(g.surge.is_none(), "too early");
+        let eta = g.surge_eta().expect("a surge is pending");
+        assert!(eta <= 6, "eta was {eta}");
+        // ...but right after it
+        for _ in 0..10 {
+            g.update();
+        }
+        assert!(g.surge.is_some() && g.final_surge);
+        assert!(
+            g.surge_eta().is_none(),
+            "countdown is replaced by the warning"
+        );
+    }
+
+    #[test]
+    fn losing_a_beacon_cancels_the_final_surge_countdown() {
+        let mut g = Game::new(4);
+        g.units.clear();
+        for b in g.beacons.iter_mut() {
+            b.lit = true;
+            b.hp = BEACON_HP;
+        }
+        for _ in 0..100 {
+            g.update();
+        }
+        assert!(g.all_lit_since.is_some());
+        g.beacons[2].lit = false;
+        g.update();
+        assert!(g.all_lit_since.is_none());
+        for _ in 0..FINAL_SURGE_DELAY_TICKS {
+            g.update();
+        }
+        assert!(g.surge.is_none(), "no final surge while a Beacon is dark");
     }
 
     // ----------------------------------------------------- beacons
