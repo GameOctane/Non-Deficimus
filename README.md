@@ -69,4 +69,6 @@ The simulation is deterministic (fixed 10 Hz tick, seeded RNG), which keeps lock
 
 ## License
 
-See [LICENSE](LICENSE).
+Copyright (C) 2026 Jason Germino (GameOctane).
+
+Licensed under the GNU General Public License, version 3 or (at your option) any later version. See [LICENSE](LICENSE).
