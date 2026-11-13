@@ -13,8 +13,8 @@ use ratatui::{
 };
 
 use crate::sim::{
-    BEACON_COUNT, BEACON_HP, Command, Game, H, Kind, RELIGHT_TICKS, ResolveTier, SHIP, Status,
-    Tile, W, idx, in_bounds,
+    BEACON_COUNT, BEACON_HP, Command, Game, H, Kind, LOG_LINES, RELIGHT_TICKS, ResolveTier, SHIP,
+    Status, Tile, W, idx, in_bounds,
 };
 
 /// What a key press asks of the program.
@@ -31,6 +31,8 @@ pub struct Ui {
     pub pending_amove: bool,
     /// The captain's briefing is on screen (shown at the start, and on `?`).
     pub show_help: bool,
+    /// How many (wrapped) comms lines the log is scrolled back; 0 = latest.
+    pub log_scroll: usize,
 }
 
 impl Ui {
@@ -40,6 +42,7 @@ impl Ui {
             drag: None,
             pending_amove: false,
             show_help: true,
+            log_scroll: 0,
         }
     }
 
@@ -179,7 +182,9 @@ fn draw_briefing(f: &mut Frame, area: Rect) {
             Span::styled("Arrows", key),
             Span::raw(" pan.  "),
             Span::styled("?", key),
-            Span::raw(" shows this again."),
+            Span::raw(" shows this again.  "),
+            Span::styled("PgUp/PgDn", key),
+            Span::raw(" scroll the log."),
         ]),
         Line::from(""),
         Line::from(Span::styled("Press any key to begin.", dim)),
@@ -203,8 +208,42 @@ fn draw_briefing(f: &mut Frame, area: Rect) {
     );
 }
 
+/// Terminal size the layout is designed for.
+const MIN_COLS: u16 = 100;
+const MIN_ROWS: u16 = 30;
+/// Lines moved per PageUp/PageDown.
+const LOG_PAGE: usize = 4;
+
+/// Break one comms message into lines of at most `width` characters,
+/// indenting continuation lines.
+fn wrap(msg: &str, width: usize) -> Vec<String> {
+    let width = width.max(12);
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in msg.split_whitespace() {
+        let fresh = cur.trim().is_empty();
+        if !fresh && cur.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str("   ");
+        } else if !fresh {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.trim().is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+fn wrapped_log(g: &Game, width: usize) -> Vec<String> {
+    g.log.iter().flat_map(|m| wrap(m, width)).collect()
+}
+
 fn rects(area: Rect) -> (Rect, Rect, Rect) {
-    let rows = Layout::vertical([Constraint::Min(10), Constraint::Length(8)]).split(area);
+    // the comms log gets taller as the terminal does (8 to 14 rows)
+    let log_h = (area.height / 4).clamp(8, 14);
+    let rows = Layout::vertical([Constraint::Min(10), Constraint::Length(log_h)]).split(area);
     let cols = Layout::horizontal([Constraint::Min(20), Constraint::Length(32)]).split(rows[0]);
     (cols[0], cols[1], rows[1])
 }
@@ -229,7 +268,16 @@ fn decay_glyph(hp: i32, max: i32) -> char {
 
 pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
     let (map_r, side_r, log_r) = rects(f.area());
-    let map_block = Block::bordered().title(" Sector ");
+    let area = f.area();
+    let title = if area.width < MIN_COLS || area.height < MIN_ROWS {
+        format!(
+            " Sector (terminal {}x{}; {MIN_COLS}x{MIN_ROWS} recommended) ",
+            area.width, area.height
+        )
+    } else {
+        " Sector ".to_string()
+    };
+    let map_block = Block::bordered().title(title);
     let inner = map_block.inner(map_r);
     f.render_widget(map_block, map_r);
 
@@ -426,15 +474,21 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
 
     // comms log
     let visible = log_r.height.saturating_sub(2) as usize;
-    let start = g.log.len().saturating_sub(visible);
-    let log_lines: Vec<Line> = g
-        .log
+    let wrapped = wrapped_log(g, log_r.width.saturating_sub(3) as usize);
+    let scroll = ui.log_scroll.min(wrapped.len().saturating_sub(visible));
+    let end = wrapped.len() - scroll;
+    let start = end.saturating_sub(visible);
+    let log_lines: Vec<Line> = wrapped[start..end]
         .iter()
-        .skip(start)
         .map(|s| Line::from(format!(" {s}")))
         .collect();
+    let log_title = if scroll > 0 {
+        " Comms (scrolled back: End = latest) "
+    } else {
+        " Comms (PgUp/PgDn: history) "
+    };
     f.render_widget(
-        Paragraph::new(log_lines).block(Block::bordered().title(" Comms ")),
+        Paragraph::new(log_lines).block(Block::bordered().title(log_title)),
         log_r,
     );
 
@@ -532,6 +586,19 @@ pub fn handle_key(
         KeyCode::Char('q') => KeyAction::Quit,
         KeyCode::Char('?') => {
             ui.show_help = true;
+            KeyAction::None
+        }
+        KeyCode::PageUp => {
+            // the log never holds more than LOG_LINES messages (a few lines each)
+            ui.log_scroll = (ui.log_scroll + LOG_PAGE).min(LOG_LINES * 4);
+            KeyAction::None
+        }
+        KeyCode::PageDown => {
+            ui.log_scroll = ui.log_scroll.saturating_sub(LOG_PAGE);
+            KeyAction::None
+        }
+        KeyCode::End => {
+            ui.log_scroll = 0;
             KeyAction::None
         }
         KeyCode::Esc => {
@@ -749,6 +816,92 @@ mod tests {
                 terminal.draw(|f| draw(f, &g, &ui)).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn long_messages_wrap_instead_of_being_cut_off() {
+        let msg = "[2:14] SURGE inbound from the south. 5 contacts, 15 seconds. Fortify!";
+        let lines = wrap(msg, 30);
+        assert!(lines.len() >= 3);
+        assert!(lines.iter().all(|l| l.chars().count() <= 30), "{lines:?}");
+        // nothing lost, continuation lines indented
+        let rejoined = lines
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(rejoined, msg);
+        assert!(lines[1].starts_with("   "));
+        // short messages stay on one line; empty ones vanish
+        assert_eq!(wrap("short one", 30), vec!["short one".to_string()]);
+        assert!(wrap("", 30).is_empty());
+    }
+
+    #[test]
+    fn page_keys_scroll_the_log_and_end_returns_to_the_latest() {
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
+        let page = |ui: &mut Ui, code| handle_key(ui, &g, code, KeyModifiers::NONE, area());
+        assert_eq!(ui.log_scroll, 0);
+        page(&mut ui, KeyCode::PageUp);
+        page(&mut ui, KeyCode::PageUp);
+        assert_eq!(ui.log_scroll, 2 * LOG_PAGE);
+        page(&mut ui, KeyCode::PageDown);
+        assert_eq!(ui.log_scroll, LOG_PAGE);
+        page(&mut ui, KeyCode::End);
+        assert_eq!(ui.log_scroll, 0);
+        // can't scroll below the latest message
+        page(&mut ui, KeyCode::PageDown);
+        assert_eq!(ui.log_scroll, 0);
+    }
+
+    fn screen_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn a_small_terminal_is_told_its_size_and_a_big_one_is_not() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let g = Game::new(1);
+        let mut ui = quiet_ui();
+        ui.show_help = false;
+        let mut small = Terminal::new(TestBackend::new(90, 26)).unwrap();
+        small.draw(|f| draw(f, &g, &ui)).unwrap();
+        assert!(screen_text(&small).contains("90x26"));
+        let mut big = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        big.draw(|f| draw(f, &g, &ui)).unwrap();
+        assert!(!screen_text(&big).contains("recommended"));
+    }
+
+    #[test]
+    fn the_comms_log_shows_timestamps_and_history_scrolls() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut g = Game::new(1);
+        g.glass = 0;
+        for _ in 0..40 {
+            g.apply(Command::Train(Kind::Marine)); // each refusal is logged
+        }
+        let mut ui = quiet_ui();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| draw(f, &g, &ui)).unwrap();
+        let latest = screen_text(&terminal);
+        assert!(
+            latest.contains("[0:00]") || latest.contains("[1:"),
+            "timestamps shown"
+        );
+        assert!(!latest.contains("scrolled back"));
+        ui.log_scroll = 100;
+        terminal.draw(|f| draw(f, &g, &ui)).unwrap();
+        assert!(screen_text(&terminal).contains("scrolled back"));
+        // with nothing older to show, scrolling has no effect
+        let short = Game::new(1);
+        terminal.draw(|f| draw(f, &short, &ui)).unwrap();
+        assert!(!screen_text(&terminal).contains("scrolled back"));
     }
 
     #[test]

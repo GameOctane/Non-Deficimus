@@ -18,7 +18,7 @@ You need a recent [Rust toolchain](https://rustup.rs) and a terminal with mouse 
 cargo run --release
 ```
 
-A terminal of at least 100x30 is recommended. You start with four crew and **can train more** with `1` `2` `3`; a briefing screen explains this when the game opens.
+A terminal of at least 100x30 is recommended (the map title warns you if yours is smaller). On a low-resolution screen, maximize or full-screen the terminal and zoom the font out (Ctrl+minus, or Ctrl+scroll in Windows Terminal) until it fits; the map and comms log grow to fill whatever space you give them. You start with four crew and **can train more** with `1` `2` `3`; a briefing screen explains this when the game opens.
 
 ## How to play
 
@@ -65,6 +65,7 @@ Four dead Beacons sit around the sector, each farther from the ship than the las
 | `c` | Select all crew |
 | Arrows | Pan the map |
 | `Esc` | Deselect (also cancels a pending attack-move) |
+| `PgUp` / `PgDn` | Scroll the comms log back / forward (`End` jumps to the latest; `Space` pauses so you can read) |
 | `?` | Show the Captain's briefing again |
 | `Space` | Pause |
 | `q` | Quit |

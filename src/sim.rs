@@ -12,6 +12,8 @@ pub const SHIP: (i32, i32) = (W / 2, H / 2);
 /// Real-time length of one tick (10 Hz). The sim itself only counts ticks.
 pub const TICK_MS: u64 = 100;
 pub const MAX_CREW: usize = 24;
+/// Comms-log lines kept for scrolling back.
+pub const LOG_LINES: usize = 200;
 
 // Tuning knobs. Change these (and run the balance harness) rather than
 // editing the rules.
@@ -351,9 +353,12 @@ impl Game {
         ((self.rng.wrapping_mul(0x2545F4914F6CDD1D) >> 33) % n as u64) as u32
     }
 
+    /// Add a comms-log line, stamped with the game clock as `[m:ss]`.
     fn say(&mut self, s: impl Into<String>) {
-        self.log.push_back(s.into());
-        while self.log.len() > 60 {
+        let secs = self.tick / 10;
+        self.log
+            .push_back(format!("[{}:{:02}] {}", secs / 60, secs % 60, s.into()));
+        while self.log.len() > LOG_LINES {
             self.log.pop_front();
         }
     }
@@ -1514,6 +1519,19 @@ mod tests {
         g.resolve_wave();
         assert_eq!(g.hull, 30, "no second last stand");
         assert_eq!(g.resolve, 95);
+    }
+
+    #[test]
+    fn log_lines_are_stamped_with_the_game_clock() {
+        let mut g = Game::new(1);
+        assert!(g.log[0].starts_with("[0:00] "), "{}", g.log[0]);
+        g.tick = 754; // 75 s
+        g.say("Test.");
+        assert_eq!(g.log.back().unwrap(), "[1:15] Test.");
+        for _ in 0..LOG_LINES * 2 {
+            g.say("spam");
+        }
+        assert_eq!(g.log.len(), LOG_LINES, "history is capped");
     }
 
     // ------------------------------------------- pathing and final surge
