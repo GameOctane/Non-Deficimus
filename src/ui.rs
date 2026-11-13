@@ -5,15 +5,16 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph},
-    Frame,
 };
 
 use crate::sim::{
-    idx, in_bounds, Command, Game, Kind, Status, Tile, BEACON_COUNT, BEACON_HP, H, RELIGHT_TICKS, SHIP, W,
+    BEACON_COUNT, BEACON_HP, Command, Game, H, Kind, RELIGHT_TICKS, SHIP, Status, Tile, W, idx,
+    in_bounds,
 };
 
 /// What a key press asks of the program.
@@ -159,8 +160,16 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         for dy in -1..=1 {
             for dx in -2..=2 {
                 if let Some((x, y)) = to_scr((SHIP.0 + dx, SHIP.1 + dy)) {
-                    let ch = if (dx, dy) == (0, 0) { 'N' } else { decay_glyph(g.hull, g.hull_max.max(g.hull_base / 2)) };
-                    let col = if g.hull * 2 < g.hull_base { Color::Yellow } else { Color::LightBlue };
+                    let ch = if (dx, dy) == (0, 0) {
+                        'N'
+                    } else {
+                        decay_glyph(g.hull, g.hull_max.max(g.hull_base / 2))
+                    };
+                    let col = if g.hull * 2 < g.hull_base {
+                        Color::Yellow
+                    } else {
+                        Color::LightBlue
+                    };
                     buf[(x, y)].set_char(ch).set_fg(col);
                 }
             }
@@ -169,10 +178,17 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         for b in &g.beacons {
             if let Some((x, y)) = to_scr(b.pos) {
                 let (ch, style) = if b.lit {
-                    let col = if b.hp * 2 < BEACON_HP { Color::Rgb(230, 120, 40) } else { Color::LightYellow };
+                    let col = if b.hp * 2 < BEACON_HP {
+                        Color::Rgb(230, 120, 40)
+                    } else {
+                        Color::LightYellow
+                    };
                     ('*', Style::new().fg(col).add_modifier(Modifier::BOLD))
                 } else if b.progress > 0 {
-                    ('o', Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    (
+                        'o',
+                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    )
                 } else {
                     ('o', Style::new().fg(Color::Rgb(150, 60, 60)))
                 };
@@ -183,7 +199,11 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
                     for i in 0..5 {
                         let bar_pos = (b.pos.0 - 2 + i, b.pos.1 - 1);
                         if let Some((bx, by)) = to_scr(bar_pos) {
-                            let (c, col) = if i < filled { ('█', Color::Yellow) } else { ('░', Color::DarkGray) };
+                            let (c, col) = if i < filled {
+                                ('█', Color::Yellow)
+                            } else {
+                                ('░', Color::DarkGray)
+                            };
                             buf[(bx, by)].set_char(c).set_fg(col);
                         }
                     }
@@ -193,9 +213,11 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         // hollow
         for foe in &g.foes {
             if let Some((x, y)) = to_scr(foe.pos) {
-                buf[(x, y)]
-                    .set_char('H')
-                    .set_style(Style::new().fg(Color::Rgb(200, 70, 40)).add_modifier(Modifier::BOLD));
+                buf[(x, y)].set_char('H').set_style(
+                    Style::new()
+                        .fg(Color::Rgb(200, 70, 40))
+                        .add_modifier(Modifier::BOLD),
+                );
             }
         }
         // crew
@@ -208,8 +230,11 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
                     cell.set_char(u.kind.glyph())
                         .set_style(Style::new().fg(Color::Black).bg(Color::Yellow));
                 } else {
-                    cell.set_char(u.kind.glyph())
-                        .set_style(Style::new().fg(kind_color(u.kind)).add_modifier(Modifier::BOLD));
+                    cell.set_char(u.kind.glyph()).set_style(
+                        Style::new()
+                            .fg(kind_color(u.kind))
+                            .add_modifier(Modifier::BOLD),
+                    );
                 }
             }
         }
@@ -217,7 +242,11 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         if let Some((a, b)) = ui.drag {
             for y in a.1.min(b.1)..=a.1.max(b.1) {
                 for x in a.0.min(b.0)..=a.0.max(b.0) {
-                    if x >= inner.x && y >= inner.y && x < inner.x + inner.width && y < inner.y + inner.height {
+                    if x >= inner.x
+                        && y >= inner.y
+                        && x < inner.x + inner.width
+                        && y < inner.y + inner.height
+                    {
                         buf[(x, y)].set_bg(Color::Rgb(25, 55, 25));
                     }
                 }
@@ -232,14 +261,29 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
     let lines = vec![
         Line::from(vec![
             Span::raw(" Driftglass "),
-            Span::styled(format!("{}", g.glass), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{}", g.glass),
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
         ]),
-        Line::from(format!(" Wake    {} {:>3}", bar(g.wake, 100.0, 12), g.wake as i32)),
-        Line::from(format!(" Hull    {} {:>3}", bar(g.hull as f32, g.hull_base as f32, 12), g.hull)),
-        Line::from(vec![
-            Span::raw(format!(" Resolve {} ", bar(g.resolve as f32, 100.0, 12))),
-        ]),
-        Line::from(Span::styled(format!("   {label}"), Style::new().fg(label_col))),
+        Line::from(format!(
+            " Wake    {} {:>3}",
+            bar(g.wake, 100.0, 12),
+            g.wake as i32
+        )),
+        Line::from(format!(
+            " Hull    {} {:>3}",
+            bar(g.hull as f32, g.hull_base as f32, 12),
+            g.hull
+        )),
+        Line::from(vec![Span::raw(format!(
+            " Resolve {} ",
+            bar(g.resolve as f32, 100.0, 12)
+        ))]),
+        Line::from(Span::styled(
+            format!("   {label}"),
+            Style::new().fg(label_col),
+        )),
         Line::from(format!(" Crew {}  Hollow {}", g.units.len(), g.foes.len())),
         Line::from(format!(" Beacons lit {}/{}", g.beacons_lit(), BEACON_COUNT)),
         Line::from(format!(" Surges held {}", g.surges_cleared)),
@@ -260,14 +304,29 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         Line::from(Span::styled(" c: all  arrows: pan", hint)),
         Line::from(Span::styled(" space: pause  q: quit", hint)),
     ];
-    let title = if g.paused { " Ship (PAUSED) " } else { " Ship " };
-    f.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), side_r);
+    let title = if g.paused {
+        " Ship (PAUSED) "
+    } else {
+        " Ship "
+    };
+    f.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(title)),
+        side_r,
+    );
 
     // comms log
     let visible = log_r.height.saturating_sub(2) as usize;
     let start = g.log.len().saturating_sub(visible);
-    let log_lines: Vec<Line> = g.log.iter().skip(start).map(|s| Line::from(format!(" {s}"))).collect();
-    f.render_widget(Paragraph::new(log_lines).block(Block::bordered().title(" Comms ")), log_r);
+    let log_lines: Vec<Line> = g
+        .log
+        .iter()
+        .skip(start)
+        .map(|s| Line::from(format!(" {s}")))
+        .collect();
+    f.render_widget(
+        Paragraph::new(log_lines).block(Block::bordered().title(" Comms ")),
+        log_r,
+    );
 
     // end overlay
     if g.status != Status::Playing {
@@ -285,7 +344,9 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         );
         f.render_widget(Clear, r);
         f.render_widget(
-            Paragraph::new(msg).block(Block::bordered()).style(Style::new().add_modifier(Modifier::BOLD)),
+            Paragraph::new(msg)
+                .block(Block::bordered())
+                .style(Style::new().add_modifier(Modifier::BOLD)),
             r,
         );
     }
@@ -324,7 +385,13 @@ pub fn handle_mouse(ui: &mut Ui, g: &Game, m: MouseEvent, area: Rect) -> Option<
     }
 }
 
-pub fn handle_key(ui: &mut Ui, g: &Game, code: KeyCode, mods: KeyModifiers, area: Rect) -> KeyAction {
+pub fn handle_key(
+    ui: &mut Ui,
+    g: &Game,
+    code: KeyCode,
+    mods: KeyModifiers,
+    area: Rect,
+) -> KeyAction {
     let (map_r, _, _) = rects(area);
     let inner = map_r.inner(Margin::new(1, 1));
     let cam = ui.cam_for(inner);

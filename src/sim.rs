@@ -140,13 +140,19 @@ pub enum Command {
     /// Move to the tile (cadets on Driftglass or the ship resume harvesting).
     Move((i32, i32)),
     /// Focus-fire the Hollow `id` (marines); everyone else moves to `at`.
-    Attack { id: u32, at: (i32, i32) },
+    Attack {
+        id: u32,
+        at: (i32, i32),
+    },
     /// Marines advance and engage anything they meet; everyone else moves.
     AttackMove((i32, i32)),
     Hold,
     Train(Kind),
     /// Select all able crew inside the inclusive world-coordinate box.
-    SelectBox { min: (i32, i32), max: (i32, i32) },
+    SelectBox {
+        min: (i32, i32),
+        max: (i32, i32),
+    },
     SelectAll,
     Deselect,
     TogglePause,
@@ -301,7 +307,13 @@ impl Game {
                 {
                     continue;
                 }
-                self.beacons.push(Beacon { pos: p, lit: false, progress: 0, paid: false, hp: 0 });
+                self.beacons.push(Beacon {
+                    pos: p,
+                    lit: false,
+                    progress: 0,
+                    paid: false,
+                    hp: 0,
+                });
                 break;
             }
         }
@@ -330,7 +342,7 @@ impl Game {
                 let n = (t.0 + dx, t.1 + dy);
                 if (dx, dy) != (0, 0) && self.walkable(n) {
                     let d = cheb(from, n);
-                    if best.map_or(true, |(_, bd)| d < bd) {
+                    if best.is_none_or(|(_, bd)| d < bd) {
                         best = Some((n, d));
                     }
                 }
@@ -376,7 +388,7 @@ impl Game {
             for x in 0..W {
                 if let Tile::Glass(_) = self.tiles[idx((x, y))] {
                     let d = cheb(from, (x, y));
-                    if best.map_or(true, |(_, bd)| d < bd) {
+                    if best.is_none_or(|(_, bd)| d < bd) {
                         best = Some(((x, y), d));
                     }
                 }
@@ -389,7 +401,7 @@ impl Game {
         let mut best: Option<(usize, i32)> = None;
         for (i, f) in self.foes.iter().enumerate() {
             let d = cheb(from, f.pos);
-            if d <= range && best.map_or(true, |(_, bd)| d < bd) {
+            if d <= range && best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((i, d));
             }
         }
@@ -397,7 +409,11 @@ impl Game {
     }
 
     fn spawn_unit(&mut self, kind: Kind, pos: (i32, i32)) {
-        let order = if kind == Kind::Cadet { Order::Harvest } else { Order::Idle };
+        let order = if kind == Kind::Cadet {
+            Order::Harvest
+        } else {
+            Order::Idle
+        };
         self.units.push(Unit {
             kind,
             pos,
@@ -509,7 +525,11 @@ impl Game {
         }
         let glass_tile = matches!(self.tiles[idx(at)], Tile::Glass(_));
         let ship_tile = in_ship(at);
-        for u in self.units.iter_mut().filter(|u| u.selected && u.down.is_none()) {
+        for u in self
+            .units
+            .iter_mut()
+            .filter(|u| u.selected && u.down.is_none())
+        {
             u.order = match u.kind {
                 Kind::Marine => Order::Attack(id),
                 Kind::Cadet if glass_tile || ship_tile => Order::Harvest,
@@ -524,7 +544,11 @@ impl Game {
         }
         let glass_tile = matches!(self.tiles[idx(t)], Tile::Glass(_));
         let ship_tile = in_ship(t);
-        for u in self.units.iter_mut().filter(|u| u.selected && u.down.is_none()) {
+        for u in self
+            .units
+            .iter_mut()
+            .filter(|u| u.selected && u.down.is_none())
+        {
             u.order = match u.kind {
                 Kind::Marine => Order::AttackMove(t),
                 Kind::Cadet if glass_tile || ship_tile => Order::Harvest,
@@ -534,7 +558,11 @@ impl Game {
     }
 
     fn hold_selected(&mut self) {
-        for u in self.units.iter_mut().filter(|u| u.selected && u.down.is_none()) {
+        for u in self
+            .units
+            .iter_mut()
+            .filter(|u| u.selected && u.down.is_none())
+        {
             u.order = Order::Hold;
         }
     }
@@ -542,7 +570,12 @@ impl Game {
     fn add_foe(&mut self, pos: (i32, i32), cd: u32) {
         let id = self.next_foe_id;
         self.next_foe_id += 1;
-        self.foes.push(Foe { id, pos, hp: 20, cd });
+        self.foes.push(Foe {
+            id,
+            pos,
+            hp: 20,
+            cd,
+        });
     }
 
     // ---------------------------------------------------------- update
@@ -553,7 +586,7 @@ impl Game {
             return;
         }
         self.tick += 1;
-        if self.tick % 50 == 0 {
+        if self.tick.is_multiple_of(50) {
             // every lit Beacon helps the sector settle faster
             let decay = 1.0 + 0.5 * self.beacons_lit() as f32;
             self.wake = (self.wake - decay).max(0.0);
@@ -577,7 +610,11 @@ impl Game {
         if wake_trigger || timer_trigger {
             let edge = self.rand(4) as u8;
             let count = 2 + self.surges_launched * 2 + (self.wake / 20.0) as u32;
-            self.surge = Some(Surge { in_ticks: 60, count, edge });
+            self.surge = Some(Surge {
+                in_ticks: 60,
+                count,
+                edge,
+            });
             self.surges_launched += 1;
             self.last_surge = self.tick;
             self.final_surge = self.beacons_lit() == BEACON_COUNT;
@@ -614,9 +651,13 @@ impl Game {
                 if self.glass >= RELIGHT_COST {
                     self.glass -= RELIGHT_COST;
                     self.beacons[k].paid = true;
-                    self.say(format!("Beacon {n}: engineer's cracked the casing. Don't breathe on it."));
-                } else if self.tick % 100 == 0 {
-                    self.say(format!("Beacon {n} needs {RELIGHT_COST} Driftglass. We have less. Mine more."));
+                    self.say(format!(
+                        "Beacon {n}: engineer's cracked the casing. Don't breathe on it."
+                    ));
+                } else if self.tick.is_multiple_of(100) {
+                    self.say(format!(
+                        "Beacon {n} needs {RELIGHT_COST} Driftglass. We have less. Mine more."
+                    ));
                 }
                 continue;
             }
@@ -629,7 +670,9 @@ impl Game {
                 b.paid = false;
                 self.resolve += BEACON_RESOLVE;
                 let lit = self.beacons_lit();
-                self.say(format!("Beacon {n} is lit. {lit} of {BEACON_COUNT}. Small mercies."));
+                self.say(format!(
+                    "Beacon {n} is lit. {lit} of {BEACON_COUNT}. Small mercies."
+                ));
                 if lit == BEACON_COUNT {
                     self.say("That's all four. Whatever is out there just noticed.");
                 }
@@ -648,7 +691,9 @@ impl Game {
             b.progress = 0;
             b.paid = false;
             self.resolve -= BEACON_RESOLVE;
-            self.say(format!("Beacon {n} has gone dark. The Hollow ate the light."));
+            self.say(format!(
+                "Beacon {n} has gone dark. The Hollow ate the light."
+            ));
         } else if first {
             self.say(format!("The Hollow are chewing on Beacon {n}."));
         }
@@ -658,7 +703,7 @@ impl Game {
         let mut best: Option<(usize, i32)> = None;
         for (k, b) in self.beacons.iter().enumerate() {
             let d = cheb(from, b.pos);
-            if b.lit && d <= range && best.map_or(true, |(_, bd)| d < bd) {
+            if b.lit && d <= range && best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((k, d));
             }
         }
@@ -688,7 +733,7 @@ impl Game {
 
     fn update_crew(&mut self) {
         let mut units = std::mem::take(&mut self.units);
-        let moving = self.tick % 3 == 0;
+        let moving = self.tick.is_multiple_of(3);
         for u in units.iter_mut() {
             if u.down.is_some() {
                 continue;
@@ -713,20 +758,22 @@ impl Game {
                     None => u.order = Order::Idle,
                     Some(i) => {
                         let fp = self.foes[i].pos;
-                        if moving && cheb(u.pos, fp) > 3 {
-                            if let Some(p) = self.step_toward(u.pos, fp, 3) {
-                                u.pos = p;
-                            }
+                        if moving
+                            && cheb(u.pos, fp) > 3
+                            && let Some(p) = self.step_toward(u.pos, fp, 3)
+                        {
+                            u.pos = p;
                         }
                     }
                 },
                 Order::AttackMove(t) => {
                     if let Some(i) = self.nearest_foe(u.pos, 6) {
                         let fp = self.foes[i].pos;
-                        if moving && cheb(u.pos, fp) > 3 {
-                            if let Some(p) = self.step_toward(u.pos, fp, 3) {
-                                u.pos = p;
-                            }
+                        if moving
+                            && cheb(u.pos, fp) > 3
+                            && let Some(p) = self.step_toward(u.pos, fp, 3)
+                        {
+                            u.pos = p;
                         }
                     } else if u.pos == t {
                         u.order = Order::Idle;
@@ -767,31 +814,32 @@ impl Game {
                 self.glass += u.carry as i32;
                 self.wake = (self.wake + u.carry as f32 * 0.6).min(100.0);
                 u.carry = 0;
-            } else if moving {
-                if let Some(p) = self.step_toward(u.pos, SHIP, 3) {
-                    u.pos = p;
-                }
+            } else if moving && let Some(p) = self.step_toward(u.pos, SHIP, 3) {
+                u.pos = p;
             }
             return;
         }
         if let Tile::Glass(n) = self.tiles[idx(u.pos)] {
-            if self.tick % 5 == 0 {
+            if self.tick.is_multiple_of(5) {
                 u.carry += 1;
-                self.tiles[idx(u.pos)] = if n <= 1 { Tile::Ground } else { Tile::Glass(n - 1) };
+                self.tiles[idx(u.pos)] = if n <= 1 {
+                    Tile::Ground
+                } else {
+                    Tile::Glass(n - 1)
+                };
             }
             return;
         }
-        if moving {
-            if let Some(t) = self.nearest_glass(u.pos) {
-                if let Some(p) = self.step_toward(u.pos, t, 0) {
-                    u.pos = p;
-                }
-            }
+        if moving
+            && let Some(t) = self.nearest_glass(u.pos)
+            && let Some(p) = self.step_toward(u.pos, t, 0)
+        {
+            u.pos = p;
         }
     }
 
     fn update_engineers(&mut self) {
-        if self.tick % 20 != 0 {
+        if !self.tick.is_multiple_of(20) {
             return;
         }
         let engineers: Vec<(i32, i32)> = self
@@ -802,28 +850,29 @@ impl Game {
             .collect();
         for ep in engineers {
             // 1. recover a Down crewmate
-            if self.glass >= 5 {
-                if let Some(i) = self
+            if self.glass >= 5
+                && let Some(i) = self
                     .units
                     .iter()
                     .position(|u| u.down.is_some() && cheb(u.pos, ep) <= 1)
-                {
-                    let u = &mut self.units[i];
-                    u.hp = (u.max_hp / 2).max(1);
-                    u.down = None;
-                    let name = u.kind.name();
-                    self.glass -= 5;
-                    self.resolve += 5;
-                    self.say(format!("Recovered the {name}. We do not fail."));
-                    continue;
-                }
+            {
+                let u = &mut self.units[i];
+                u.hp = (u.max_hp / 2).max(1);
+                u.down = None;
+                let name = u.kind.name();
+                self.glass -= 5;
+                self.resolve += 5;
+                self.say(format!("Recovered the {name}. We do not fail."));
+                continue;
             }
             if self.glass < 1 {
                 continue;
             }
             // 2. mend the most worn crewmate nearby
             if let Some(i) = self.units.iter().position(|u| {
-                u.down.is_none() && cheb(u.pos, ep) <= 2 && (u.hp < u.max_hp || u.max_hp < u.base_max)
+                u.down.is_none()
+                    && cheb(u.pos, ep) <= 2
+                    && (u.hp < u.max_hp || u.max_hp < u.base_max)
             }) {
                 let u = &mut self.units[i];
                 if u.hp < u.max_hp {
@@ -848,7 +897,7 @@ impl Game {
     }
 
     fn update_foes(&mut self) {
-        let moving = self.tick % 4 == 0;
+        let moving = self.tick.is_multiple_of(4);
         for i in 0..self.foes.len() {
             if self.foes[i].cd > 0 {
                 self.foes[i].cd -= 1;
@@ -860,7 +909,7 @@ impl Game {
                     continue;
                 }
                 let d = cheb(p, u.pos);
-                if d <= 8 && best.map_or(true, |(_, bd)| d < bd) {
+                if d <= 8 && best.is_none_or(|(_, bd)| d < bd) {
                     best = Some((j, d));
                 }
             }
@@ -894,15 +943,11 @@ impl Game {
                                 self.hit_beacon(k);
                                 self.foes[i].cd = 6;
                             }
-                        } else if moving {
-                            if let Some(np) = self.step_toward(p, bp, 1) {
-                                self.foes[i].pos = np;
-                            }
-                        }
-                    } else if moving {
-                        if let Some(np) = self.step_toward(p, SHIP, 3) {
+                        } else if moving && let Some(np) = self.step_toward(p, bp, 1) {
                             self.foes[i].pos = np;
                         }
+                    } else if moving && let Some(np) = self.step_toward(p, SHIP, 3) {
+                        self.foes[i].pos = np;
                     }
                 }
             }
@@ -938,7 +983,10 @@ impl Game {
             let u = self.units.remove(i);
             self.add_foe(u.pos, 6);
             self.resolve -= 10;
-            self.say(format!("We lost the {}. The Hollow took it.", u.kind.name()));
+            self.say(format!(
+                "We lost the {}. The Hollow took it.",
+                u.kind.name()
+            ));
         }
     }
 
@@ -996,7 +1044,10 @@ mod tests {
         for _ in 0..1500 {
             g.update();
         }
-        assert!(g.glass > start || g.wake > 0.0, "harvest loop should pay out");
+        assert!(
+            g.glass > start || g.wake > 0.0,
+            "harvest loop should pay out"
+        );
     }
 
     #[test]
@@ -1075,7 +1126,10 @@ mod tests {
         let mut g = Game::new(3);
         g.apply(Command::Train(Kind::Marine));
         // a box around the whole map selects every able unit
-        g.apply(Command::SelectBox { min: (0, 0), max: (W - 1, H - 1) });
+        g.apply(Command::SelectBox {
+            min: (0, 0),
+            max: (W - 1, H - 1),
+        });
         assert!(g.units.iter().all(|u| u.selected));
         g.apply(Command::Deselect);
         assert!(g.units.iter().all(|u| !u.selected));
@@ -1123,7 +1177,10 @@ mod tests {
             assert_eq!(g.beacons.len(), BEACON_COUNT);
             let mut last = 0;
             for b in &g.beacons {
-                assert!(g.tiles[idx(b.pos)] == Tile::Ground, "seed {seed}: beacon not on bare ground");
+                assert!(
+                    g.tiles[idx(b.pos)] == Tile::Ground,
+                    "seed {seed}: beacon not on bare ground"
+                );
                 assert!(!b.lit);
                 let d = cheb(b.pos, SHIP);
                 assert!(d > last, "seed {seed}: distances must increase");
@@ -1179,7 +1236,9 @@ mod tests {
         g.units[0].selected = true;
         let bp = g.beacons[0].pos;
         g.apply(Command::Move(bp));
-        let Order::Move(dest) = g.units[0].order else { panic!("expected a move order") };
+        let Order::Move(dest) = g.units[0].order else {
+            panic!("expected a move order")
+        };
         assert!(dest != bp && cheb(dest, bp) == 1);
     }
 
@@ -1283,7 +1342,11 @@ mod tests {
         g.surge_live = true;
         g.add_foe((0, 0), 0);
         g.resolve_wave();
-        assert_eq!(g.status, Status::Playing, "surge is still live while Hollow remain");
+        assert_eq!(
+            g.status,
+            Status::Playing,
+            "surge is still live while Hollow remain"
+        );
         g.foes.clear();
         g.resolve_wave();
         assert_eq!(g.status, Status::Won);
@@ -1333,14 +1396,26 @@ mod tests {
             (5, Command::Train(Kind::Engineer)),
             (10, Command::SelectAll),
             (11, Command::Hold),
-            (20, Command::SelectBox { min: (SHIP.0 + 2, SHIP.1), max: (SHIP.0 + 8, SHIP.1 + 6) }),
+            (
+                20,
+                Command::SelectBox {
+                    min: (SHIP.0 + 2, SHIP.1),
+                    max: (SHIP.0 + 8, SHIP.1 + 6),
+                },
+            ),
             (21, Command::AttackMove((SHIP.0 + 12, SHIP.1 + 4))),
             (200, Command::Move((SHIP.0 - 8, SHIP.1 - 3))),
             (400, Command::TogglePause),
             (401, Command::TogglePause),
             (600, Command::Train(Kind::Cadet)),
             (700, Command::SelectAll),
-            (701, Command::Attack { id: 1, at: (SHIP.0 + 4, SHIP.1 + 4) }),
+            (
+                701,
+                Command::Attack {
+                    id: 1,
+                    at: (SHIP.0 + 4, SHIP.1 + 4),
+                },
+            ),
             (1300, Command::Deselect),
         ];
         let replay = |seed: u64| {

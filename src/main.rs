@@ -33,7 +33,7 @@ use ratatui::crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
 };
-use ratatui::{layout::Rect, DefaultTerminal};
+use ratatui::{DefaultTerminal, layout::Rect};
 
 use sim::{Game, TICK_MS};
 use ui::{KeyAction, Ui};
