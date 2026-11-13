@@ -42,6 +42,11 @@ Four dead Beacons sit around the sector, each farther from the ship than the las
 | Engineer | `e` | Repairs crew and hull, and recovers Down units |
 | Marine | `m` | Frontline fighter |
 
+- **Resolve tiers:** the sidebar shows how the crew is holding up, and it matters.
+  - **70 or more (Steady, then NON DEFICIMUS at 90+):** Engineers work faster.
+  - **31-69 (Holding):** no effect.
+  - **30 or below (Frayed):** training costs 25% more.
+  - **Last stand:** once per game, if Resolve is 90+ while the hull is under 25%, the crew finds one more push. Everyone still standing is healed and the hull gains 50, but Resolve drops to 60.
 - **Decay:** Hollow attacks lower a target's *maximum* Integrity until an Engineer mends it.
 - **Down, not dead:** a crewmate at zero Integrity can be recovered by an Engineer within about 30 seconds. If the Hollow reach them first, they're reclaimed as Hollow.
 - **Resolve:** crew morale. It rises when you recover units and clear surges, and falls when you lose crew. At zero, the mission is lost.

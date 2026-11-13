@@ -38,6 +38,7 @@ struct Outcome {
     hull_at_end: i32,
     /// Lost because Resolve ran out (as opposed to the hull).
     resolve_loss: bool,
+    last_stand: bool,
 }
 
 fn count(g: &Game, k: Kind) -> usize {
@@ -62,23 +63,23 @@ fn train_policy(g: &mut Game, bot: Bot) {
     match bot {
         Bot::Idle => {}
         Bot::Turtle => {
-            if cads < 3 && g.glass >= Kind::Cadet.cost() {
+            if cads < 3 && g.glass >= g.train_cost(Kind::Cadet) {
                 g.apply(Command::Train(Kind::Cadet));
-            } else if g.glass >= Kind::Marine.cost() {
+            } else if g.glass >= g.train_cost(Kind::Marine) {
                 g.apply(Command::Train(Kind::Marine));
             }
         }
         Bot::Player => {
-            if cads < 3 && g.glass >= Kind::Cadet.cost() {
+            if cads < 3 && g.glass >= g.train_cost(Kind::Cadet) {
                 g.apply(Command::Train(Kind::Cadet));
-            } else if marines < 3 && g.glass >= Kind::Marine.cost() {
+            } else if marines < 3 && g.glass >= g.train_cost(Kind::Marine) {
                 g.apply(Command::Train(Kind::Marine));
-            } else if cads < 4 && g.glass >= Kind::Cadet.cost() {
+            } else if cads < 4 && g.glass >= g.train_cost(Kind::Cadet) {
                 g.apply(Command::Train(Kind::Cadet));
-            } else if engs < 2 && g.glass >= Kind::Engineer.cost() {
+            } else if engs < 2 && g.glass >= g.train_cost(Kind::Engineer) {
                 g.apply(Command::Train(Kind::Engineer));
             } else if marines < 20
-                && g.glass >= Kind::Marine.cost() + reserve_for_beacons(g, marines)
+                && g.glass >= g.train_cost(Kind::Marine) + reserve_for_beacons(g, marines)
             {
                 g.apply(Command::Train(Kind::Marine));
             }
@@ -167,6 +168,7 @@ fn play(seed: u64, bot: Bot) -> Outcome {
         beacons_lit: g.beacons_lit(),
         hull_at_end: g.hull,
         resolve_loss: g.status == Status::Lost && g.resolve <= 0,
+        last_stand: g.last_stand_used,
     }
 }
 
@@ -175,6 +177,7 @@ struct Summary {
     losses: usize,
     timeouts: usize,
     resolve_losses: usize,
+    last_stands: usize,
     median_ticks: u64,
     avg_surges: f32,
     avg_beacons: f32,
@@ -191,6 +194,7 @@ fn run_all(bot: Bot) -> Summary {
         losses: outs.iter().filter(|o| o.lost).count(),
         timeouts: outs.iter().filter(|o| !o.won && !o.lost).count(),
         resolve_losses: outs.iter().filter(|o| o.resolve_loss).count(),
+        last_stands: outs.iter().filter(|o| o.last_stand).count(),
         median_ticks: ticks[ticks.len() / 2],
         avg_surges: outs.iter().map(|o| o.surges_cleared as f32).sum::<f32>() / n,
         avg_beacons: outs.iter().map(|o| o.beacons_lit as f32).sum::<f32>() / n,
@@ -209,7 +213,7 @@ fn balance_report() {
         let s = run_all(bot);
         println!(
             "{bot:>7?}: won {:>2}  lost {:>2} (resolve {:>2})  timeout {:>2} | median {:>3}s | \
-             surges {:>4.1}  beacons {:>3.1}  hull {:>5.1}",
+             surges {:>4.1}  beacons {:>3.1}  hull {:>5.1} | last stands {:>2}",
             s.wins,
             s.losses,
             s.resolve_losses,
@@ -218,6 +222,7 @@ fn balance_report() {
             s.avg_surges,
             s.avg_beacons,
             s.avg_hull,
+            s.last_stands,
         );
     }
 }

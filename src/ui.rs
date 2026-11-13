@@ -13,8 +13,8 @@ use ratatui::{
 };
 
 use crate::sim::{
-    BEACON_COUNT, BEACON_HP, Command, Game, H, Kind, RELIGHT_TICKS, SHIP, Status, Tile, W, idx,
-    in_bounds,
+    BEACON_COUNT, BEACON_HP, Command, Game, H, Kind, RELIGHT_TICKS, ResolveTier, SHIP, Status,
+    Tile, W, idx, in_bounds,
 };
 
 /// What a key press asks of the program.
@@ -90,12 +90,20 @@ fn kind_color(k: Kind) -> Color {
     }
 }
 
-fn resolve_label(resolve: i32) -> (&'static str, Color) {
-    match resolve {
-        90..=100 => ("NON DEFICIMUS", Color::Yellow),
-        70..=89 => ("Steady", Color::Green),
-        31..=69 => ("Holding", Color::White),
-        _ => ("Frayed", Color::Red),
+fn tier_color(t: ResolveTier) -> Color {
+    match t {
+        ResolveTier::Unbroken => Color::Yellow,
+        ResolveTier::Steady => Color::Green,
+        ResolveTier::Holding => Color::White,
+        ResolveTier::Frayed => Color::Red,
+    }
+}
+
+/// "Steady: quick hands", or just the name when the tier has no effect.
+fn tier_text(t: ResolveTier) -> String {
+    match t.effect() {
+        "" => t.name().to_string(),
+        effect => format!("{}: {effect}", t.name()),
     }
 }
 
@@ -255,7 +263,8 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
     }
 
     // sidebar
-    let (label, label_col) = resolve_label(g.resolve);
+    let tier = g.tier();
+    let (label, label_col) = (tier_text(tier), tier_color(tier));
     let selected = g.units.iter().filter(|u| u.selected).count();
     let hint = Style::new().fg(Color::DarkGray);
     let lines = vec![
@@ -289,9 +298,9 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         Line::from(format!(" Surges held {}", g.surges_cleared)),
         Line::from(format!(" Selected {selected}")),
         Line::from(""),
-        Line::from(format!(" [1] Cadet     {}", Kind::Cadet.cost())),
-        Line::from(format!(" [2] Engineer  {}", Kind::Engineer.cost())),
-        Line::from(format!(" [3] Marine    {}", Kind::Marine.cost())),
+        Line::from(format!(" [1] Cadet     {}", g.train_cost(Kind::Cadet))),
+        Line::from(format!(" [2] Engineer  {}", g.train_cost(Kind::Engineer))),
+        Line::from(format!(" [3] Marine    {}", g.train_cost(Kind::Marine))),
         Line::from(""),
         Line::from(if ui.pending_amove {
             Span::styled(" ATTACK-MOVE: click target", Style::new().fg(Color::Yellow))

@@ -16,6 +16,25 @@ pub const MAX_CREW: usize = 24;
 // editing the rules.
 /// Resolve the crew starts with.
 pub const START_RESOLVE: i32 = 70;
+/// Resolve tiers. At `RESOLVE_QUICK` or more, Engineers work faster; at
+/// `RESOLVE_FRAYED` or less, training costs more; at `RESOLVE_UNBROKEN` or
+/// more, a badly hurt ship makes a one-time last stand.
+pub const RESOLVE_QUICK: i32 = 70;
+pub const RESOLVE_UNBROKEN: i32 = 90;
+pub const RESOLVE_FRAYED: i32 = 30;
+/// Ticks between Engineer repair pulses, normally and at high Resolve.
+pub const ENGINEER_PULSE_TICKS: u64 = 20;
+pub const ENGINEER_PULSE_QUICK_TICKS: u64 = 15;
+/// Training cost multiplier (percent) while Frayed.
+pub const FRAYED_COST_PERCENT: i32 = 125;
+/// Last stand: fires when Resolve is Unbroken and hull is under this share
+/// of its base (1 in N), once per game.
+pub const LAST_STAND_HULL_FRACTION: i32 = 4;
+pub const LAST_STAND_HULL_BONUS: i32 = 50;
+/// Minimum Resolve for the last stand.
+pub const LAST_STAND_MIN_RESOLVE: i32 = RESOLVE_UNBROKEN;
+/// Resolve the crew is left with after a last stand.
+pub const LAST_STAND_RESOLVE: i32 = 60;
 /// Resolve lost when a Down crewmate is reclaimed by the Hollow.
 pub const RESOLVE_LOST_UNIT: i32 = 6;
 /// A surge is forced this many ticks after the last one, whatever the Wake.
@@ -79,6 +98,49 @@ impl Kind {
             Kind::Cadet => 12,
             Kind::Engineer => 14,
             Kind::Marine => 24,
+        }
+    }
+}
+
+/// How the crew is holding up. Each tier has a mechanical effect.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResolveTier {
+    /// 30 or below: training costs 25% more.
+    Frayed,
+    /// 31-69: no modifiers.
+    Holding,
+    /// 70-89: Engineers pulse faster.
+    Steady,
+    /// 90+: Engineers pulse faster, and a last stand is available.
+    Unbroken,
+}
+
+impl ResolveTier {
+    pub fn of(resolve: i32) -> Self {
+        if resolve >= RESOLVE_UNBROKEN {
+            ResolveTier::Unbroken
+        } else if resolve >= RESOLVE_QUICK {
+            ResolveTier::Steady
+        } else if resolve > RESOLVE_FRAYED {
+            ResolveTier::Holding
+        } else {
+            ResolveTier::Frayed
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            ResolveTier::Frayed => "Frayed",
+            ResolveTier::Holding => "Holding",
+            ResolveTier::Steady => "Steady",
+            ResolveTier::Unbroken => "NON DEFICIMUS",
+        }
+    }
+    /// A few words on what the tier is doing for (or to) the crew.
+    pub fn effect(self) -> &'static str {
+        match self {
+            ResolveTier::Frayed => "training +25%",
+            ResolveTier::Holding => "",
+            ResolveTier::Steady | ResolveTier::Unbroken => "quick hands",
         }
     }
 }
@@ -187,6 +249,8 @@ pub struct Game {
     /// True while the surge in flight is the final one (all Beacons were lit
     /// when it launched). Clearing it with all Beacons still lit wins.
     pub final_surge: bool,
+    /// The one-time last stand has already happened.
+    pub last_stand_used: bool,
     pub hull: i32,
     pub hull_max: i32,
     pub hull_base: i32,
@@ -230,6 +294,7 @@ impl Game {
             foes: Vec::new(),
             beacons: Vec::new(),
             final_surge: false,
+            last_stand_used: false,
             hull: 200,
             hull_max: 200,
             hull_base: 200,
@@ -454,6 +519,21 @@ impl Game {
         });
     }
 
+    pub fn tier(&self) -> ResolveTier {
+        ResolveTier::of(self.resolve)
+    }
+
+    /// What training `kind` costs right now (more while the crew is Frayed).
+    pub fn train_cost(&self, kind: Kind) -> i32 {
+        let base = kind.cost();
+        if self.tier() == ResolveTier::Frayed {
+            // round up so the penalty is never smaller than advertised
+            (base * FRAYED_COST_PERCENT + 99) / 100
+        } else {
+            base
+        }
+    }
+
     fn train(&mut self, kind: Kind) {
         if self.status != Status::Playing {
             return;
@@ -462,7 +542,8 @@ impl Game {
             self.say("The ship can't support any more crew.");
             return;
         }
-        if self.glass < kind.cost() {
+        let cost = self.train_cost(kind);
+        if self.glass < cost {
             self.say(format!("Not enough Driftglass for a {}.", kind.name()));
             return;
         }
@@ -482,7 +563,7 @@ impl Game {
             }
         }
         if let Some(p) = spot {
-            self.glass -= kind.cost();
+            self.glass -= cost;
             self.spawn_unit(kind, p);
             self.say(format!("New {} on deck.", kind.name()));
         }
@@ -870,7 +951,11 @@ impl Game {
     }
 
     fn update_engineers(&mut self) {
-        if !self.tick.is_multiple_of(20) {
+        let pulse = match self.tier() {
+            ResolveTier::Steady | ResolveTier::Unbroken => ENGINEER_PULSE_QUICK_TICKS,
+            _ => ENGINEER_PULSE_TICKS,
+        };
+        if !self.tick.is_multiple_of(pulse) {
             return;
         }
         let engineers: Vec<(i32, i32)> = self
@@ -1026,6 +1111,27 @@ impl Game {
         }
     }
 
+    /// One time per game: a crew that is Unbroken but watching the hull
+    /// give out finds one more push. Heals everyone still standing and
+    /// shores up the hull, at the cost of most of that Resolve.
+    fn maybe_last_stand(&mut self) {
+        if self.last_stand_used
+            || self.resolve < LAST_STAND_MIN_RESOLVE
+            || self.hull <= 0
+            || self.hull * LAST_STAND_HULL_FRACTION >= self.hull_base
+        {
+            return;
+        }
+        self.last_stand_used = true;
+        for u in self.units.iter_mut().filter(|u| u.down.is_none()) {
+            u.hp = u.max_hp;
+        }
+        self.hull += LAST_STAND_HULL_BONUS;
+        self.hull_max = self.hull_max.max(self.hull);
+        self.resolve = LAST_STAND_RESOLVE;
+        self.say("Captain's Log: nobody said 'fall back'. Everyone up. This is the last stand.");
+    }
+
     fn resolve_wave(&mut self) {
         self.foes.retain(|f| f.hp > 0);
         if self.surge_live && self.foes.is_empty() {
@@ -1045,6 +1151,7 @@ impl Game {
             }
         }
         self.resolve = self.resolve.min(100);
+        self.maybe_last_stand();
         if self.hull <= 0 || self.resolve <= 0 {
             self.status = Status::Lost;
             self.say("Captain's Log: ...we failed. Not today. Not like this. (press q)");
@@ -1189,6 +1296,134 @@ mod tests {
         g.apply(Command::TogglePause);
         g.update();
         assert_eq!(g.tick, t + 1);
+    }
+
+    // ------------------------------------------------ resolve tiers
+
+    #[test]
+    fn tiers_follow_the_documented_thresholds() {
+        for (resolve, tier) in [
+            (100, ResolveTier::Unbroken),
+            (90, ResolveTier::Unbroken),
+            (89, ResolveTier::Steady),
+            (70, ResolveTier::Steady),
+            (69, ResolveTier::Holding),
+            (31, ResolveTier::Holding),
+            (30, ResolveTier::Frayed),
+            (0, ResolveTier::Frayed),
+        ] {
+            assert_eq!(ResolveTier::of(resolve), tier, "resolve {resolve}");
+        }
+        assert_eq!(
+            Game::new(1).tier(),
+            ResolveTier::Steady,
+            "the crew starts Steady"
+        );
+    }
+
+    /// An engineer next to a badly hurt marine, with Driftglass to spend.
+    /// Returns the marine's hp after `ticks` ticks at the given Resolve.
+    fn marine_hp_after(resolve: i32, ticks: u32) -> i32 {
+        let mut g = Game::new(8);
+        g.units.clear();
+        g.glass = 500;
+        g.spawn_unit(Kind::Engineer, (SHIP.0 + 4, SHIP.1 + 6));
+        g.spawn_unit(Kind::Marine, (SHIP.0 + 5, SHIP.1 + 6));
+        g.units[1].hp = 1;
+        for _ in 0..ticks {
+            g.resolve = resolve; // hold the tier steady
+            g.update();
+        }
+        g.units[1].hp
+    }
+
+    #[test]
+    fn engineers_pulse_every_15_ticks_at_70_resolve_or_more() {
+        // 60 ticks: 3 pulses of +4 normally, 4 pulses at 70+
+        assert_eq!(marine_hp_after(69, 60), 1 + 3 * 4);
+        assert_eq!(marine_hp_after(70, 60), 1 + 4 * 4);
+        assert_eq!(marine_hp_after(95, 60), 1 + 4 * 4);
+    }
+
+    #[test]
+    fn frayed_crews_pay_a_quarter_more_to_train() {
+        let mut g = Game::new(1);
+        g.resolve = RESOLVE_FRAYED + 1;
+        assert_eq!(g.train_cost(Kind::Marine), 40);
+        g.resolve = RESOLVE_FRAYED;
+        assert_eq!(g.train_cost(Kind::Cadet), 25);
+        assert_eq!(g.train_cost(Kind::Engineer), 44, "35 * 1.25 rounds up");
+        assert_eq!(g.train_cost(Kind::Marine), 50);
+
+        // the higher price is what is actually charged, and what is required
+        g.glass = 49;
+        let crew = g.units.len();
+        g.apply(Command::Train(Kind::Marine));
+        assert_eq!(g.units.len(), crew, "49 is not enough while Frayed");
+        g.glass = 50;
+        g.apply(Command::Train(Kind::Marine));
+        assert_eq!(g.units.len(), crew + 1);
+        assert_eq!(g.glass, 0);
+    }
+
+    fn last_stand_fixture(hull: i32, resolve: i32) -> Game {
+        let mut g = Game::new(6);
+        g.hull = hull;
+        g.resolve = resolve;
+        for u in g.units.iter_mut() {
+            u.hp = 1;
+        }
+        g
+    }
+
+    #[test]
+    fn last_stand_heals_the_crew_shores_up_the_hull_and_costs_resolve() {
+        let mut g = last_stand_fixture(40, 95);
+        g.units[0].down = Some(100); // a Down crewmate is not healed
+        g.units[0].hp = 0;
+        g.resolve_wave();
+        assert!(g.last_stand_used);
+        assert_eq!(g.hull, 90);
+        assert_eq!(g.resolve, LAST_STAND_RESOLVE);
+        assert_eq!(g.status, Status::Playing);
+        for u in g.units.iter().skip(1) {
+            assert_eq!(u.hp, u.max_hp);
+        }
+        assert_eq!(g.units[0].hp, 0);
+        assert!(g.log.iter().any(|l| l.contains("last stand")));
+    }
+
+    #[test]
+    fn last_stand_needs_unbroken_resolve_and_a_hull_under_a_quarter() {
+        // hull exactly at 25% (50 of 200) is not low enough
+        let mut g = last_stand_fixture(50, 95);
+        g.resolve_wave();
+        assert!(!g.last_stand_used);
+        // 49 is
+        let mut g = last_stand_fixture(49, 95);
+        g.resolve_wave();
+        assert!(g.last_stand_used);
+        // resolve 89 is not Unbroken
+        let mut g = last_stand_fixture(20, 89);
+        g.resolve_wave();
+        assert!(!g.last_stand_used);
+        // a hull already at zero is too late
+        let mut g = last_stand_fixture(0, 95);
+        g.resolve_wave();
+        assert!(!g.last_stand_used);
+        assert_eq!(g.status, Status::Lost);
+    }
+
+    #[test]
+    fn last_stand_only_happens_once_per_game() {
+        let mut g = last_stand_fixture(30, 95);
+        g.resolve_wave();
+        assert_eq!(g.hull, 80);
+        g.hull = 30;
+        g.resolve = 95;
+        g.resolve_wave();
+        assert_eq!(g.hull, 30, "no second last stand");
+        assert_eq!(g.resolve, 95);
     }
 
     // ----------------------------------------------------- beacons
