@@ -24,7 +24,7 @@ A terminal of at least 100x30 is recommended (the map title warns you if yours i
 
 **Hold and push.** Harvesting raises the sector's **Wake** meter. When Wake crosses a threshold (or time runs out), a Hollow **surge** hits your base, with about 15 seconds of warning. Surges keep getting bigger.
 
-**Win:** relight all four **Beacons**, then survive the final surge. It is called about 30 seconds after the fourth light comes on (plus the usual warning), so you won't be left waiting. If a Beacon goes dark before the surge is cleared, you'll have to relight it and hold out for the next one. The sidebar always shows how long until the next surge at the latest; Wake can bring it sooner.
+**Win:** relight all four **Beacons**, then survive the final surge. It is called about 30 seconds after the fourth light comes on (plus the usual warning), so you won't be left waiting. It is always big (at least 10 Hollow, however early you get there), so you can rush the lights but you can't skip building a defense. If a Beacon goes dark before the surge is cleared, you'll have to relight it and hold out for the next one. The sidebar always shows how long until the next surge at the latest; Wake can bring it sooner.
 
 **Lose:** the hull is destroyed or Resolve hits zero.
 

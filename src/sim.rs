@@ -55,6 +55,10 @@ pub const WAKE_TRIGGER_STEP: f32 = 12.0;
 /// Wake gained per Driftglass delivered.
 pub const WAKE_PER_GLASS: f32 = 0.13;
 
+/// The final surge is never smaller than this, however early it comes, so
+/// rushing the Beacons doesn't skip the need for a defence.
+pub const FINAL_SURGE_MIN_CONTACTS: u32 = 10;
+
 /// Hollow contacts in a surge, given how many have launched and the Wake.
 pub fn surge_size(launched: u32, wake: f32) -> u32 {
     2 + launched + (wake / 25.0) as u32
@@ -778,7 +782,11 @@ impl Game {
         let timer_trigger = self.surge_eta() == Some(0);
         if wake_trigger || timer_trigger {
             let edge = self.rand(4) as u8;
-            let count = surge_size(self.surges_launched, self.wake);
+            let final_surge = self.beacons_lit() == BEACON_COUNT;
+            let mut count = surge_size(self.surges_launched, self.wake);
+            if final_surge {
+                count = count.max(FINAL_SURGE_MIN_CONTACTS);
+            }
             self.surge = Some(Surge {
                 in_ticks: SURGE_WARNING_TICKS,
                 count,
@@ -786,7 +794,7 @@ impl Game {
             });
             self.surges_launched += 1;
             self.last_surge = self.tick;
-            self.final_surge = self.beacons_lit() == BEACON_COUNT;
+            self.final_surge = final_surge;
             let dir = ["north", "east", "south", "west"][edge as usize];
             let secs = SURGE_WARNING_TICKS / 10;
             if self.final_surge {
@@ -845,7 +853,7 @@ impl Game {
                 ));
                 if lit == BEACON_COUNT {
                     self.say(
-                        "That's all four. Whatever is out there just noticed. Expect company soon.",
+                        "That's all four. Whatever is out there just noticed, and it is bringing everything.",
                     );
                 }
             }
@@ -1612,6 +1620,11 @@ mod tests {
         assert!(
             g.surge_eta().is_none(),
             "countdown is replaced by the warning"
+        );
+        let count = g.surge.as_ref().unwrap().count;
+        assert!(
+            count >= FINAL_SURGE_MIN_CONTACTS,
+            "the finale is never small, however early it comes (got {count})"
         );
     }
 

@@ -26,6 +26,9 @@ enum Bot {
     Turtle,
     /// Builds a balanced crew and relights Beacons between surges.
     Player,
+    /// Trains nothing and sends the Engineer straight for the Beacons,
+    /// ignoring surges: the "rush" a first-time player tends to try.
+    Rush,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -61,7 +64,7 @@ fn train_policy(g: &mut Game, bot: Bot) {
         count(g, Kind::Marine),
     );
     match bot {
-        Bot::Idle => {}
+        Bot::Idle | Bot::Rush => {}
         Bot::Turtle => {
             if cads < 3 && g.glass >= g.train_cost(Kind::Cadet) {
                 g.apply(Command::Train(Kind::Cadet));
@@ -94,10 +97,10 @@ fn order_unit_at(g: &mut Game, pos: (i32, i32), cmd: Command) {
     g.apply(Command::Deselect);
 }
 
-fn beacon_policy(g: &mut Game) {
+fn beacon_policy(g: &mut Game, bot: Bot) {
     // "busy" = a surge is announced or in flight
-    let busy = g.surge.is_some() || g.surge_live;
-    let defended = count(g, Kind::Marine) >= 5;
+    let busy = bot != Bot::Rush && (g.surge.is_some() || g.surge_live);
+    let defended = bot == Bot::Rush || count(g, Kind::Marine) >= 5;
     let home = (SHIP.0 + 3, SHIP.1 + 2);
     let engineers: Vec<(i32, i32)> = g
         .units
@@ -147,8 +150,8 @@ fn play_game(seed: u64, bot: Bot) -> Game {
         if t % 10 == 0 {
             train_policy(&mut g, bot);
         }
-        if bot == Bot::Player && t % 10 == 5 {
-            beacon_policy(&mut g);
+        if matches!(bot, Bot::Player | Bot::Rush) && t % 10 == 5 {
+            beacon_policy(&mut g, bot);
         }
         g.update();
         if g.status != Status::Playing {
@@ -209,7 +212,7 @@ fn balance_report() {
         "\n{SEEDS} seeds per bot, up to {} min of game time",
         MAX_TICKS / 600
     );
-    for bot in [Bot::Idle, Bot::Turtle, Bot::Player] {
+    for bot in [Bot::Idle, Bot::Turtle, Bot::Player, Bot::Rush] {
         let s = run_all(bot);
         println!(
             "{bot:>7?}: won {:>2}  lost {:>2} (resolve {:>2})  timeout {:>2} | median {:>3}s | \
@@ -298,6 +301,13 @@ fn balance_targets_hold() {
         player.wins <= SEEDS as usize * 3 / 4,
         "winning must not be trivial (bot won {} of {SEEDS})",
         player.wins
+    );
+    // Rushing the lights with no army must not be a way to skip the game.
+    let rush = run_all(Bot::Rush);
+    assert!(
+        rush.wins <= SEEDS as usize / 10,
+        "an army-less rush should almost never win (won {} of {SEEDS})",
+        rush.wins
     );
     assert!(
         player.median_ticks >= 3_000,

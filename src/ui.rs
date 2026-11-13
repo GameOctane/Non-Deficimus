@@ -173,6 +173,9 @@ fn draw_briefing(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled("Beacons", head)),
         Line::from("Park an Engineer next to a dark Beacon: 30 Driftglass, about 8 seconds."),
+        Line::from(
+            "The fourth light calls the FINAL SURGE: 10 or more Hollow. Build a defence first.",
+        ),
         Line::from(""),
         Line::from(vec![
             Span::styled("Drag", key),
