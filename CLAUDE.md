@@ -36,9 +36,12 @@ One map, 3 unit types (Cadet, Engineer, Marine), Beacons, one defensive structur
 
 Do NOT add Pilots, Systems Officers, Drifters, multiplayer, or a campaign yet.
 
-## Known gaps against these rules (as of the baseline)
+## Layout
 
-All of the sim and UI currently live in `src/main.rs`, and some of it predates these rules. Fix these when touching the relevant code; don't spread them further.
-- `Kind::color()` and `Game::cam_for` / `world_at` use Ratatui types (`Color`, `Rect`), and `Game` holds UI state (`cam`, `drag`, `paused`, `pending_amove`).
-- `handle_mouse` / `handle_key` mutate `Game` directly rather than issuing commands.
+- `src/sim.rs`: state, rules, pathing, `Command` and `Game::apply`. No Ratatui/crossterm. Tests live here.
+- `src/ui.rs`: drawing and input decoding. `Ui` holds the camera, drag box and pending attack-move. Input handlers read `Game` but only return `Command`s.
+- `src/main.rs`: terminal setup, the seed, and the real-time loop (applies commands, calls `update()` at 10 Hz).
+
+## Not yet done
+
 - Beacons and the defensive structure are not implemented yet (README roadmap).
