@@ -28,6 +28,15 @@ A terminal of at least 100x30 is recommended (the map title warns you if yours i
 
 **Lose:** the hull is destroyed or Resolve hits zero.
 
+### Turrets
+
+Press `4`, then click a tile within 12 tiles of the ship to place a **turret** (`t` while going up, `T` once built). It costs **60 Driftglass**, paid when you place it, and an **Engineer** has to stand next to it for about 5 seconds to finish it. The nearest free Engineer goes automatically, or the Engineers you have selected.
+
+- A finished turret fires on its own at Hollow within 5 tiles, as fast as a Marine.
+- You can have up to **4**.
+- The Hollow will go for turrets (and lit Beacons) when no crew are nearby, and Engineers can repair a damaged one. A turret that runs out of Integrity is destroyed.
+- Turrets block the tile they stand on, so route around them.
+
 ### Beacons
 
 Four dead Beacons sit around the sector, each farther from the ship than the last. They show as `o` (dark, dim red), `o` in bold yellow with a progress bar above it (being relit), and `*` (lit; it turns orange when corroded).
@@ -62,6 +71,7 @@ Four dead Beacons sit around the sector, each farther from the ship than the las
 | `a`, then click | Attack-move: Marines advance and engage anything they meet |
 | `h` | Hold position: stay put and shoot |
 | `1` `2` `3` | Train a Cadet, Engineer or Marine |
+| `4`, then click | Build a turret on that tile (an Engineer walks over to raise it) |
 | `c` | Select all crew |
 | Arrows | Pan the map |
 | `Esc` | Deselect (also cancels a pending attack-move) |
@@ -82,7 +92,9 @@ The simulation is deterministic (fixed 10 Hz tick, seeded RNG), which keeps lock
 ## Roadmap
 
 - [x] Beacons to relight
-- [ ] A defensive structure to build
+- [x] A defensive structure to build (the turret)
+- [ ] Fog of war (lit Beacons could reveal the sector)
+- [ ] Upgrades for structures, crew and the Hollow
 - [ ] Pilots and Systems Officers
 - [ ] Mission scripting and a Captain's log campaign
 - [ ] Co-op over the network

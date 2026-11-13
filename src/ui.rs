@@ -14,7 +14,7 @@ use ratatui::{
 
 use crate::sim::{
     BEACON_COUNT, BEACON_HP, Command, Game, H, Kind, LOG_LINES, RELIGHT_TICKS, ResolveTier, SHIP,
-    Status, Tile, W, idx, in_bounds,
+    Status, TURRET_BUILD_TICKS, TURRET_CAP, TURRET_COST, TURRET_HP, Tile, W, idx, in_bounds,
 };
 
 /// What a key press asks of the program.
@@ -29,6 +29,8 @@ pub struct Ui {
     pub cam: (i32, i32),
     pub drag: Option<((u16, u16), (u16, u16))>,
     pub pending_amove: bool,
+    /// Waiting for a click to place a turret (after pressing `4`).
+    pub pending_build: bool,
     /// The captain's briefing is on screen (shown at the start, and on `?`).
     pub show_help: bool,
     /// How many (wrapped) comms lines the log is scrolled back; 0 = latest.
@@ -41,6 +43,7 @@ impl Ui {
             cam: (SHIP.0 - 40, SHIP.1 - 12),
             drag: None,
             pending_amove: false,
+            pending_build: false,
             show_help: true,
             log_scroll: 0,
         }
@@ -168,6 +171,10 @@ fn draw_briefing(f: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  3  ", key),
             Span::raw("Marine   fights"),
+        ]),
+        Line::from(vec![
+            Span::styled("  4  ", key),
+            Span::raw("Turret   then click a tile near the ship; an Engineer builds it"),
         ]),
         Line::from("Crew costs Driftglass. Start with a few Marines: a surge is coming."),
         Line::from(""),
@@ -365,6 +372,38 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
                 }
             }
         }
+        // turrets: T = built (orange when damaged), t = going up (with a progress bar)
+        for t in &g.turrets {
+            if let Some((x, y)) = to_scr(t.pos) {
+                let (ch, style) = if t.built {
+                    let col = if t.hp * 2 < TURRET_HP {
+                        Color::Rgb(230, 120, 40)
+                    } else {
+                        Color::LightGreen
+                    };
+                    ('T', Style::new().fg(col).add_modifier(Modifier::BOLD))
+                } else {
+                    (
+                        't',
+                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    )
+                };
+                buf[(x, y)].set_char(ch).set_style(style);
+                if !t.built && t.progress > 0 {
+                    let filled = (t.progress * 5 / TURRET_BUILD_TICKS) as i32;
+                    for i in 0..5 {
+                        if let Some((bx, by)) = to_scr((t.pos.0 - 2 + i, t.pos.1 - 1)) {
+                            let (c, col) = if i < filled {
+                                ('█', Color::Yellow)
+                            } else {
+                                ('░', Color::DarkGray)
+                            };
+                            buf[(bx, by)].set_char(c).set_fg(col);
+                        }
+                    }
+                }
+            }
+        }
         // hollow
         for foe in &g.foes {
             if let Some((x, y)) = to_scr(foe.pos) {
@@ -453,8 +492,13 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
         Line::from(format!(" [1] Cadet     {}", g.train_cost(Kind::Cadet))),
         Line::from(format!(" [2] Engineer  {}", g.train_cost(Kind::Engineer))),
         Line::from(format!(" [3] Marine    {}", g.train_cost(Kind::Marine))),
-        Line::from(""),
-        Line::from(if ui.pending_amove {
+        Line::from(format!(
+            " [4] Turret    {TURRET_COST}  ({}/{TURRET_CAP})",
+            g.turrets.len()
+        )),
+        Line::from(if ui.pending_build {
+            Span::styled(" BUILD: click a tile", Style::new().fg(Color::Yellow))
+        } else if ui.pending_amove {
             Span::styled(" ATTACK-MOVE: click target", Style::new().fg(Color::Yellow))
         } else {
             Span::raw("")
@@ -540,6 +584,14 @@ pub fn handle_mouse(ui: &mut Ui, g: &Game, m: MouseEvent, area: Rect) -> Option<
         && m.column < inner.x + inner.width
         && m.row < inner.y + inner.height;
     match m.kind {
+        MouseEventKind::Down(MouseButton::Left) if inside && ui.pending_build => {
+            ui.pending_build = false;
+            Some(Command::Build(ui.world_at(inner, m.column, m.row)))
+        }
+        MouseEventKind::Down(MouseButton::Right) if ui.pending_build => {
+            ui.pending_build = false;
+            None
+        }
         MouseEventKind::Down(MouseButton::Left) if inside && ui.pending_amove => {
             let t = ui.world_at(inner, m.column, m.row);
             ui.order_at(g, t)
@@ -606,9 +658,11 @@ pub fn handle_key(
         }
         KeyCode::Esc => {
             ui.pending_amove = false;
+            ui.pending_build = false;
             KeyAction::Command(Command::Deselect)
         }
         KeyCode::Char('a') => {
+            ui.pending_build = false;
             ui.pending_amove = g.units.iter().any(|u| u.selected && u.kind == Kind::Marine);
             KeyAction::None
         }
@@ -621,6 +675,11 @@ pub fn handle_key(
         KeyCode::Char('1') => KeyAction::Command(Command::Train(Kind::Cadet)),
         KeyCode::Char('2') => KeyAction::Command(Command::Train(Kind::Engineer)),
         KeyCode::Char('3') => KeyAction::Command(Command::Train(Kind::Marine)),
+        KeyCode::Char('4') => {
+            ui.pending_amove = false;
+            ui.pending_build = true;
+            KeyAction::None
+        }
         KeyCode::Left => {
             ui.cam = (cam.0 - 4, cam.1);
             KeyAction::None
@@ -905,6 +964,48 @@ mod tests {
         let short = Game::new(1);
         terminal.draw(|f| draw(f, &short, &ui)).unwrap();
         assert!(!screen_text(&terminal).contains("scrolled back"));
+    }
+
+    #[test]
+    fn building_a_turret_takes_key_four_then_a_click() {
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
+        let at = (SHIP.0 + 6, SHIP.1 + 4);
+        let left = mouse(MouseEventKind::Down(MouseButton::Left), at.0, at.1);
+        // a plain left click is just the start of a drag, not a build
+        assert_eq!(handle_mouse(&mut ui, &g, left, area()), None);
+        ui.drag = None;
+        assert!(matches!(key(&mut ui, &g, '4'), KeyAction::None));
+        assert!(ui.pending_build);
+        assert_eq!(
+            handle_mouse(&mut ui, &g, left, area()),
+            Some(Command::Build(at))
+        );
+        assert!(!ui.pending_build, "one click, one turret");
+    }
+
+    #[test]
+    fn building_can_be_cancelled_with_esc_or_a_right_click() {
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
+        key(&mut ui, &g, '4');
+        let esc = handle_key(&mut ui, &g, KeyCode::Esc, KeyModifiers::NONE, area());
+        assert!(matches!(esc, KeyAction::Command(Command::Deselect)));
+        assert!(!ui.pending_build);
+        key(&mut ui, &g, '4');
+        let right = mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            SHIP.0 + 6,
+            SHIP.1 + 4,
+        );
+        assert_eq!(handle_mouse(&mut ui, &g, right, area()), None);
+        assert!(!ui.pending_build);
+        // starting an attack-move also drops build mode, and vice versa
+        key(&mut ui, &g, '4');
+        let mut g2 = Game::new(1);
+        g2.apply(Command::SelectAll);
+        key(&mut ui, &g2, 'a');
+        assert!(ui.pending_amove && !ui.pending_build);
+        key(&mut ui, &g2, '4');
+        assert!(ui.pending_build && !ui.pending_amove);
     }
 
     #[test]

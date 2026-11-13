@@ -26,6 +26,8 @@ enum Bot {
     Turtle,
     /// Builds a balanced crew and relights Beacons between surges.
     Player,
+    /// Like Turtle, but spends on an Engineer and turrets around the ship.
+    Builder,
     /// Trains nothing and sends the Engineer straight for the Beacons,
     /// ignoring surges: the "rush" a first-time player tends to try.
     Rush,
@@ -57,6 +59,27 @@ fn reserve_for_beacons(g: &Game, marines: usize) -> i32 {
     }
 }
 
+/// Try spots around the ship until a turret is accepted.
+fn place_turret(g: &mut Game) {
+    const SPOTS: [(i32, i32); 8] = [
+        (7, 0),
+        (-7, 0),
+        (0, -6),
+        (0, 6),
+        (6, 5),
+        (-6, -5),
+        (6, -5),
+        (-6, 5),
+    ];
+    let before = g.turrets.len();
+    for (dx, dy) in SPOTS {
+        g.apply(Command::Build((SHIP.0 + dx, SHIP.1 + dy)));
+        if g.turrets.len() > before {
+            return;
+        }
+    }
+}
+
 fn train_policy(g: &mut Game, bot: Bot) {
     let (cads, engs, marines) = (
         count(g, Kind::Cadet),
@@ -72,6 +95,22 @@ fn train_policy(g: &mut Game, bot: Bot) {
                 g.apply(Command::Train(Kind::Marine));
             }
         }
+        Bot::Builder => {
+            if cads < 3 && g.glass >= g.train_cost(Kind::Cadet) {
+                g.apply(Command::Train(Kind::Cadet));
+            } else if marines < 3 && g.glass >= g.train_cost(Kind::Marine) {
+                g.apply(Command::Train(Kind::Marine));
+            } else if engs < 1 && g.glass >= g.train_cost(Kind::Engineer) {
+                g.apply(Command::Train(Kind::Engineer));
+            } else if g.turrets.len() < TURRET_CAP
+                && g.turrets.iter().all(|t| t.built)
+                && g.glass >= TURRET_COST
+            {
+                place_turret(g);
+            } else if g.glass >= g.train_cost(Kind::Marine) {
+                g.apply(Command::Train(Kind::Marine));
+            }
+        }
         Bot::Player => {
             if cads < 3 && g.glass >= g.train_cost(Kind::Cadet) {
                 g.apply(Command::Train(Kind::Cadet));
@@ -81,6 +120,12 @@ fn train_policy(g: &mut Game, bot: Bot) {
                 g.apply(Command::Train(Kind::Cadet));
             } else if engs < 2 && g.glass >= g.train_cost(Kind::Engineer) {
                 g.apply(Command::Train(Kind::Engineer));
+            } else if marines >= 4
+                && g.turrets.len() < TURRET_CAP
+                && g.turrets.iter().all(|t| t.built)
+                && g.glass >= TURRET_COST + reserve_for_beacons(g, marines)
+            {
+                place_turret(g);
             } else if marines < 20
                 && g.glass >= g.train_cost(Kind::Marine) + reserve_for_beacons(g, marines)
             {
@@ -212,7 +257,7 @@ fn balance_report() {
         "\n{SEEDS} seeds per bot, up to {} min of game time",
         MAX_TICKS / 600
     );
-    for bot in [Bot::Idle, Bot::Turtle, Bot::Player, Bot::Rush] {
+    for bot in [Bot::Idle, Bot::Turtle, Bot::Builder, Bot::Player, Bot::Rush] {
         let s = run_all(bot);
         println!(
             "{bot:>7?}: won {:>2}  lost {:>2} (resolve {:>2})  timeout {:>2} | median {:>3}s | \
@@ -287,6 +332,15 @@ fn balance_targets_hold() {
         turtle.median_ticks >= 6_000,
         "a pure defence should hold for ~10 min (median {}s)",
         turtle.median_ticks / 10
+    );
+
+    // A turret-building crew should hold at least as well as a pure Marine one.
+    let builder = run_all(Bot::Builder);
+    assert!(
+        builder.losses <= turtle.losses,
+        "turrets should help (builder lost {} of {SEEDS}, turtle {})",
+        builder.losses,
+        turtle.losses
     );
 
     // Winnable but not trivial, even for a mediocre bot (it wins roughly a

@@ -15,6 +15,22 @@ pub const MAX_CREW: usize = 24;
 /// Comms-log lines kept for scrolling back.
 pub const LOG_LINES: usize = 200;
 
+// The one defensive structure: a turret. It fires on its own but can't move,
+// the Hollow can destroy it, and an Engineer builds and repairs it.
+/// Driftglass spent when a turret is placed.
+pub const TURRET_COST: i32 = 60;
+/// Most turrets standing (or going up) at once.
+pub const TURRET_CAP: usize = 4;
+/// Ticks an Engineer must work beside a turret to finish it (~5 s).
+pub const TURRET_BUILD_TICKS: u32 = 50;
+/// Turrets must be within this many tiles of the ship (it powers them).
+pub const TURRET_BUILD_RADIUS: i32 = 12;
+pub const TURRET_HP: i32 = 40;
+pub const TURRET_RANGE: i32 = 5;
+pub const TURRET_DAMAGE: i32 = 6;
+/// Ticks between shots (the same rate as a Marine).
+pub const TURRET_COOLDOWN: u32 = 5;
+
 // Tuning knobs. Change these (and run the balance harness) rather than
 // editing the rules.
 /// Resolve the crew starts with.
@@ -214,6 +230,25 @@ pub struct Beacon {
     pub hp: i32,
 }
 
+/// A turret. Blocks the tile it stands on, like a Beacon.
+#[derive(Debug)]
+pub struct Turret {
+    pub pos: (i32, i32),
+    /// Integrity; only meaningful once built.
+    pub hp: i32,
+    pub built: bool,
+    /// Build progress in ticks (0..TURRET_BUILD_TICKS) while going up.
+    pub progress: u32,
+    pub cd: u32,
+}
+
+/// Something the Hollow will go out of their way to chew on.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Structure {
+    Beacon(usize),
+    Turret(usize),
+}
+
 #[derive(Debug)]
 pub struct Surge {
     pub in_ticks: u32,
@@ -251,6 +286,8 @@ pub enum Command {
     SelectAll,
     Deselect,
     TogglePause,
+    /// Build a turret on the tile; an Engineer walks over to raise it.
+    Build((i32, i32)),
 }
 
 pub struct Game {
@@ -258,6 +295,7 @@ pub struct Game {
     pub units: Vec<Unit>,
     pub foes: Vec<Foe>,
     pub beacons: Vec<Beacon>,
+    pub turrets: Vec<Turret>,
     /// True while the surge in flight is the final one (all Beacons were lit
     /// when it launched). Clearing it with all Beacons still lit wins.
     pub final_surge: bool,
@@ -307,6 +345,7 @@ impl Game {
             units: Vec::new(),
             foes: Vec::new(),
             beacons: Vec::new(),
+            turrets: Vec::new(),
             final_surge: false,
             all_lit_since: None,
             last_stand_used: false,
@@ -437,12 +476,15 @@ impl Game {
             && self.tiles[idx(p)] != Tile::Rock
             && !in_ship(p)
             && !self.beacons.iter().any(|b| b.pos == p)
+            && !self.turrets.iter().any(|t| t.pos == p)
     }
 
-    /// If `t` is a Beacon (which can't be stood on), the walkable tile next
-    /// to it that is closest to `from`; otherwise `t` itself.
+    /// If `t` holds a Beacon or turret (which can't be stood on), the
+    /// walkable tile next to it that is closest to `from`; otherwise `t`.
     pub(crate) fn standing_spot(&self, t: (i32, i32), from: (i32, i32)) -> (i32, i32) {
-        if !self.beacons.iter().any(|b| b.pos == t) {
+        let structure =
+            self.beacons.iter().any(|b| b.pos == t) || self.turrets.iter().any(|u| u.pos == t);
+        if !structure {
             return t;
         }
         let mut best: Option<((i32, i32), i32)> = None;
@@ -622,6 +664,7 @@ impl Game {
             Command::SelectAll => self.select_all(),
             Command::Deselect => self.units.iter_mut().for_each(|u| u.selected = false),
             Command::TogglePause => self.paused = !self.paused,
+            Command::Build(t) => self.build_turret(t),
         }
     }
 
@@ -746,6 +789,7 @@ impl Game {
         self.update_crew();
         self.update_engineers();
         self.update_beacons();
+        self.update_turrets();
         self.update_foes();
         self.update_down();
         self.resolve_wave();
@@ -879,15 +923,142 @@ impl Game {
         }
     }
 
-    fn nearest_lit_beacon(&self, from: (i32, i32), range: i32) -> Option<usize> {
-        let mut best: Option<(usize, i32)> = None;
+    /// The closest lit Beacon or finished turret within `range` (Beacons
+    /// win ties), which idle Hollow will go and chew on.
+    fn nearest_structure(&self, from: (i32, i32), range: i32) -> Option<Structure> {
+        let mut best: Option<(Structure, i32)> = None;
+        let mut consider = |what: Structure, pos: (i32, i32)| {
+            let d = cheb(from, pos);
+            if d <= range && best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((what, d));
+            }
+        };
         for (k, b) in self.beacons.iter().enumerate() {
-            let d = cheb(from, b.pos);
-            if b.lit && d <= range && best.is_none_or(|(_, bd)| d < bd) {
-                best = Some((k, d));
+            if b.lit {
+                consider(Structure::Beacon(k), b.pos);
             }
         }
-        best.map(|(k, _)| k)
+        for (k, t) in self.turrets.iter().enumerate() {
+            if t.built {
+                consider(Structure::Turret(k), t.pos);
+            }
+        }
+        best.map(|(what, _)| what)
+    }
+
+    fn structure_pos(&self, what: Structure) -> (i32, i32) {
+        match what {
+            Structure::Beacon(k) => self.beacons[k].pos,
+            Structure::Turret(k) => self.turrets[k].pos,
+        }
+    }
+
+    fn hit_structure(&mut self, what: Structure) {
+        match what {
+            Structure::Beacon(k) => self.hit_beacon(k),
+            Structure::Turret(k) => self.hit_turret(k),
+        }
+    }
+
+    fn hit_turret(&mut self, k: usize) {
+        let n = k + 1;
+        let first = self.turrets[k].hp == TURRET_HP;
+        self.turrets[k].hp -= 4;
+        if self.turrets[k].hp <= 0 {
+            self.turrets.remove(k);
+            self.say(format!("Turret {n} is scrap. We'll build another."));
+        } else if first {
+            self.say(format!("The Hollow are chewing on Turret {n}."));
+        }
+    }
+
+    /// Place a turret on `t`. Pays up front; an Engineer then has to stand
+    /// next to it for ~5 s to finish it (see `update_turrets`).
+    fn build_turret(&mut self, t: (i32, i32)) {
+        if self.status != Status::Playing {
+            return;
+        }
+        if cheb(t, SHIP) > TURRET_BUILD_RADIUS {
+            self.say("Too far from the ship. Nothing out there to power it.");
+            return;
+        }
+        if !self.walkable(t) {
+            self.say("Can't build there. Rock, hull and good intentions don't mix.");
+            return;
+        }
+        if self.units.iter().any(|u| u.pos == t) {
+            self.say("Someone is standing there. Ask them to move.");
+            return;
+        }
+        if self.turrets.len() >= TURRET_CAP {
+            self.say("That's all the turrets the ship can power.");
+            return;
+        }
+        if self.glass < TURRET_COST {
+            self.say(format!(
+                "A turret needs {TURRET_COST} Driftglass. We have less."
+            ));
+            return;
+        }
+        self.glass -= TURRET_COST;
+        self.turrets.push(Turret {
+            pos: t,
+            hp: 0,
+            built: false,
+            progress: 0,
+            cd: 0,
+        });
+        self.say("Turret going up. Somebody hold the other end.");
+        // Send the selected Engineers, or failing that the nearest free one.
+        let free = |u: &Unit| u.kind == Kind::Engineer && u.down.is_none();
+        let mut sent: Vec<usize> = (0..self.units.len())
+            .filter(|&i| free(&self.units[i]) && self.units[i].selected)
+            .collect();
+        if sent.is_empty() {
+            sent.extend(
+                (0..self.units.len())
+                    .filter(|&i| free(&self.units[i]))
+                    .min_by_key(|&i| cheb(self.units[i].pos, t)),
+            );
+        }
+        for i in sent {
+            let spot = self.standing_spot(t, self.units[i].pos);
+            self.units[i].order = Order::Move(spot);
+        }
+    }
+
+    /// Engineers finish turrets going up; finished turrets shoot.
+    fn update_turrets(&mut self) {
+        for k in 0..self.turrets.len() {
+            let tp = self.turrets[k].pos;
+            if !self.turrets[k].built {
+                let tended = self
+                    .units
+                    .iter()
+                    .any(|u| u.kind == Kind::Engineer && u.down.is_none() && cheb(u.pos, tp) <= 1);
+                if tended {
+                    self.turrets[k].progress += 1;
+                    if self.turrets[k].progress >= TURRET_BUILD_TICKS {
+                        self.turrets[k].built = true;
+                        self.turrets[k].hp = TURRET_HP;
+                        self.say(format!(
+                            "Turret {} is up. It points at things. Good enough.",
+                            k + 1
+                        ));
+                    }
+                }
+                continue;
+            }
+            if self.turrets[k].cd > 0 {
+                self.turrets[k].cd -= 1;
+            }
+            if self.turrets[k].cd == 0
+                && let Some(i) = self.nearest_foe(tp, TURRET_RANGE)
+            {
+                self.foes[i].hp -= TURRET_DAMAGE;
+                self.turrets[k].cd = TURRET_COOLDOWN;
+            }
+        }
     }
 
     fn run_surge_timer(&mut self) {
@@ -1067,6 +1238,16 @@ impl Game {
                 self.glass -= 1;
                 continue;
             }
+            // 2b. mend a damaged turret nearby
+            if let Some(k) = self
+                .turrets
+                .iter()
+                .position(|t| t.built && t.hp < TURRET_HP && cheb(t.pos, ep) <= 2)
+            {
+                self.turrets[k].hp = (self.turrets[k].hp + 4).min(TURRET_HP);
+                self.glass -= 1;
+                continue;
+            }
             // 3. patch the hull
             if cheb(ep, SHIP) <= 4 {
                 if self.hull < self.hull_max {
@@ -1119,12 +1300,12 @@ impl Game {
                             self.hull = self.hull.min(self.hull_max);
                             self.foes[i].cd = 6;
                         }
-                    } else if let Some(k) = self.nearest_lit_beacon(p, 8) {
-                        // no crew nearby: corrode a lit Beacon instead
-                        let bp = self.beacons[k].pos;
+                    } else if let Some(what) = self.nearest_structure(p, 8) {
+                        // no crew nearby: corrode a lit Beacon or a turret
+                        let bp = self.structure_pos(what);
                         if cheb(p, bp) <= 1 {
                             if self.foes[i].cd == 0 {
-                                self.hit_beacon(k);
+                                self.hit_structure(what);
                                 self.foes[i].cd = 6;
                             }
                         } else if moving && let Some(np) = self.step_toward(p, bp, 1) {
@@ -1649,6 +1830,228 @@ mod tests {
         assert!(g.surge.is_none(), "no final surge while a Beacon is dark");
     }
 
+    // ------------------------------------------------------ turrets
+
+    /// Free, buildable tiles near the ship (not rock, ship, beacon or unit).
+    fn free_tiles(g: &Game, n: usize) -> Vec<(i32, i32)> {
+        let mut out = Vec::new();
+        for r in 4..=TURRET_BUILD_RADIUS {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let p = (SHIP.0 + dx, SHIP.1 + dy);
+                    if cheb(p, SHIP) == r && g.walkable(p) && !g.units.iter().any(|u| u.pos == p) {
+                        out.push(p);
+                        if out.len() == n {
+                            return out;
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn built_turret(pos: (i32, i32)) -> Turret {
+        Turret {
+            pos,
+            hp: TURRET_HP,
+            built: true,
+            progress: TURRET_BUILD_TICKS,
+            cd: 0,
+        }
+    }
+
+    #[test]
+    fn turrets_can_only_go_in_sensible_places() {
+        let mut g = Game::new(2);
+        g.units.clear();
+        g.glass = 500;
+        let spots = free_tiles(&g, 6);
+        // too far from the ship
+        let far = (SHIP.0 + TURRET_BUILD_RADIUS + 1, SHIP.1);
+        g.apply(Command::Build(far));
+        assert!(g.turrets.is_empty() && g.glass == 500);
+        assert!(g.log.back().unwrap().contains("Too far"));
+        // on the ship, on a Beacon, on rock
+        g.apply(Command::Build(SHIP));
+        let bp = g.beacons[0].pos;
+        g.apply(Command::Build(bp));
+        g.tiles[idx(spots[0])] = Tile::Rock;
+        g.apply(Command::Build(spots[0]));
+        assert!(
+            g.turrets.is_empty() && g.glass == 500,
+            "nothing built, nothing charged"
+        );
+        // under someone's feet
+        g.tiles[idx(spots[0])] = Tile::Ground;
+        g.spawn_unit(Kind::Marine, spots[0]);
+        g.apply(Command::Build(spots[0]));
+        assert!(g.turrets.is_empty());
+        g.units.clear();
+        // can't afford it
+        g.glass = TURRET_COST - 1;
+        g.apply(Command::Build(spots[1]));
+        assert!(g.turrets.is_empty());
+        // fine: pays up front, goes up unfinished
+        g.glass = 500;
+        g.apply(Command::Build(spots[1]));
+        assert_eq!(g.turrets.len(), 1);
+        assert!(!g.turrets[0].built);
+        assert_eq!(g.glass, 500 - TURRET_COST);
+        // same tile twice is refused
+        g.apply(Command::Build(spots[1]));
+        assert_eq!(g.turrets.len(), 1);
+        // the cap
+        for &p in &spots[2..] {
+            g.apply(Command::Build(p));
+        }
+        assert_eq!(g.turrets.len(), TURRET_CAP);
+        assert_eq!(g.glass, 500 - TURRET_COST * TURRET_CAP as i32);
+        assert!(g.log.back().unwrap().contains("all the turrets"));
+    }
+
+    #[test]
+    fn an_engineer_finishes_a_turret_in_about_five_seconds() {
+        let mut g = Game::new(2);
+        g.units.clear();
+        g.glass = 200;
+        let spot = free_tiles(&g, 1)[0];
+        let stand = {
+            g.apply(Command::Build(spot));
+            g.standing_spot(spot, spot)
+        };
+        // no Engineer yet: nothing happens
+        for _ in 0..80 {
+            g.update();
+        }
+        assert!(!g.turrets[0].built && g.turrets[0].progress == 0);
+        g.spawn_unit(Kind::Engineer, stand);
+        for _ in 0..TURRET_BUILD_TICKS - 5 {
+            g.update();
+        }
+        assert!(!g.turrets[0].built, "not done yet");
+        for _ in 0..10 {
+            g.update();
+        }
+        assert!(g.turrets[0].built);
+        assert_eq!(g.turrets[0].hp, TURRET_HP);
+        assert!(g.log.iter().any(|l| l.contains("Turret 1 is up")));
+    }
+
+    #[test]
+    fn placing_a_turret_sends_an_engineer_to_build_it() {
+        let mut g = Game::new(2);
+        g.units.clear();
+        g.glass = 200;
+        g.spawn_unit(Kind::Marine, (SHIP.0 + 4, SHIP.1 + 4));
+        g.spawn_unit(Kind::Engineer, (SHIP.0 - 4, SHIP.1 - 4));
+        let spot = free_tiles(&g, 8)[7];
+        g.apply(Command::Build(spot));
+        // nobody selected: the nearest Engineer is sent, the Marine is not
+        assert!(matches!(g.units[1].order, Order::Move(_)));
+        assert_eq!(g.units[0].order, Order::Idle);
+        for _ in 0..400 {
+            g.update();
+            if g.turrets[0].built {
+                break;
+            }
+        }
+        assert!(
+            g.turrets[0].built,
+            "the Engineer walked over and finished it"
+        );
+    }
+
+    #[test]
+    fn a_finished_turret_shoots_foes_in_range_only() {
+        let mut g = Game::new(2);
+        g.units.clear();
+        let tp = free_tiles(&g, 1)[0];
+        g.turrets.push(built_turret(tp));
+        let near = (tp.0 + TURRET_RANGE, tp.1);
+        let far = (tp.0 - TURRET_RANGE - 1, tp.1);
+        g.add_foe(near, 99);
+        g.add_foe(far, 99);
+        g.update();
+        assert_eq!(g.foes[0].hp, 20 - TURRET_DAMAGE, "in range: hit");
+        assert_eq!(g.foes[1].hp, 20, "out of range: untouched");
+        // it fires at the Marine rate, not every tick
+        g.update();
+        assert_eq!(g.foes[0].hp, 20 - TURRET_DAMAGE);
+        // a turret still going up does not shoot
+        let mut g = Game::new(2);
+        g.units.clear();
+        g.turrets.push(Turret {
+            built: false,
+            hp: 0,
+            progress: 3,
+            ..built_turret(tp)
+        });
+        g.add_foe(near, 99);
+        g.update();
+        assert_eq!(g.foes[0].hp, 20);
+    }
+
+    #[test]
+    fn hollow_swarm_and_destroy_a_turret() {
+        let mut g = Game::new(2);
+        g.units.clear();
+        let tp = *free_tiles(&g, 40).last().unwrap(); // far from the ship
+        assert!(cheb(tp, SHIP) > 3);
+        g.turrets.push(built_turret(tp));
+        let mut placed = 0;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if (dx, dy) != (0, 0) && placed < 6 {
+                    g.add_foe((tp.0 + dx, tp.1 + dy), 0);
+                    placed += 1;
+                }
+            }
+        }
+        let mut chewed = false;
+        for _ in 0..200 {
+            g.update();
+            chewed |= g.log.iter().any(|l| l.contains("chewing on Turret"));
+            if g.turrets.is_empty() {
+                break;
+            }
+        }
+        assert!(g.turrets.is_empty(), "six Hollow beat one turret");
+        assert!(chewed || g.log.iter().any(|l| l.contains("scrap")));
+        assert!(g.log.iter().any(|l| l.contains("is scrap")));
+    }
+
+    #[test]
+    fn engineers_repair_damaged_turrets() {
+        let mut g = Game::new(2);
+        g.units.clear();
+        g.glass = 100;
+        let tp = free_tiles(&g, 1)[0];
+        let mut t = built_turret(tp);
+        t.hp = 8;
+        g.turrets.push(t);
+        let stand = g.standing_spot(tp, tp);
+        g.spawn_unit(Kind::Engineer, stand);
+        for _ in 0..60 {
+            g.update();
+        }
+        assert!(g.turrets[0].hp > 8, "mended (hp {})", g.turrets[0].hp);
+        assert!(g.turrets[0].hp <= TURRET_HP);
+        assert!(g.glass < 100, "repairs cost Driftglass");
+    }
+
+    #[test]
+    fn turrets_block_the_tile_they_stand_on() {
+        let mut g = Game::new(2);
+        g.units.clear();
+        let tp = free_tiles(&g, 1)[0];
+        assert!(g.walkable(tp));
+        g.turrets.push(built_turret(tp));
+        assert!(!g.walkable(tp));
+        let spot = g.standing_spot(tp, (tp.0 + 3, tp.1));
+        assert!(spot != tp && cheb(spot, tp) == 1);
+    }
+
     // ----------------------------------------------------- beacons
 
     /// A fresh game with no crew, one Engineer next to Beacon 0, and
@@ -1862,11 +2265,12 @@ mod tests {
     /// Everything that matters about the sim state, as a comparable string.
     fn fingerprint(g: &Game) -> String {
         format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}",
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}",
             g.tiles,
             g.units,
             g.foes,
             g.beacons,
+            g.turrets,
             g.surge,
             g.hull,
             g.hull_max,
@@ -1910,6 +2314,7 @@ mod tests {
                     at: (SHIP.0 + 4, SHIP.1 + 4),
                 },
             ),
+            (150, Command::Build((SHIP.0 + 5, SHIP.1 - 5))),
             (1300, Command::Deselect),
         ];
         let replay = |seed: u64| {

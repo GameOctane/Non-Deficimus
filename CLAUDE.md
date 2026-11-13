@@ -53,4 +53,5 @@ Do NOT add Pilots, Systems Officers, Drifters, multiplayer, or a campaign yet.
 
 ## Not yet done
 
-- The defensive structure is not implemented yet (README roadmap). Beacons are done.
+- Beacons and the turret (the one defensive structure) are done.
+- Out of v1 by decision: fog of war, upgrades for structures/crew/enemies, and the items already excluded in Scope above. Fog of war, if added, should be display-only first (UI state; the sim stays unchanged).
