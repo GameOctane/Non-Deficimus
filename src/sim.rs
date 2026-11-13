@@ -27,13 +27,15 @@ pub const ENGINEER_PULSE_TICKS: u64 = 20;
 pub const ENGINEER_PULSE_QUICK_TICKS: u64 = 15;
 /// Training cost multiplier (percent) while Frayed.
 pub const FRAYED_COST_PERCENT: i32 = 125;
-/// Last stand: fires when Resolve is Unbroken and hull is under this share
-/// of its base (1 in N), once per game.
+/// Last stand: once per game, when the hull falls under this share of its
+/// base (1 in N) and the crew is not Frayed. Resolve sets how strong it is.
 pub const LAST_STAND_HULL_FRACTION: i32 = 4;
+/// Hull added at full strength (Unbroken). Crew are healed to the same
+/// percentage of their max Integrity.
 pub const LAST_STAND_HULL_BONUS: i32 = 50;
-/// Minimum Resolve for the last stand.
-pub const LAST_STAND_MIN_RESOLVE: i32 = RESOLVE_UNBROKEN;
-/// Resolve the crew is left with after a last stand.
+/// Minimum Resolve for a last stand: anything above Frayed.
+pub const LAST_STAND_MIN_RESOLVE: i32 = RESOLVE_FRAYED + 1;
+/// Resolve is capped at this after a last stand (it never goes up).
 pub const LAST_STAND_RESOLVE: i32 = 60;
 /// Resolve lost when a Down crewmate is reclaimed by the Hollow.
 pub const RESOLVE_LOST_UNIT: i32 = 6;
@@ -1111,9 +1113,20 @@ impl Game {
         }
     }
 
-    /// One time per game: a crew that is Unbroken but watching the hull
-    /// give out finds one more push. Heals everyone still standing and
-    /// shores up the hull, at the cost of most of that Resolve.
+    /// How strong a last stand is at the current Resolve, in percent.
+    fn last_stand_strength(&self) -> i32 {
+        match self.tier() {
+            ResolveTier::Unbroken => 100,
+            ResolveTier::Steady => 75,
+            ResolveTier::Holding => 50,
+            ResolveTier::Frayed => 0,
+        }
+    }
+
+    /// One time per game: when the hull is about to give out and the crew
+    /// still has some fight in it, they find one more push. Everyone still
+    /// standing is healed and the hull is shored up, both scaled by Resolve,
+    /// and the effort costs Resolve (it never rises).
     fn maybe_last_stand(&mut self) {
         if self.last_stand_used
             || self.resolve < LAST_STAND_MIN_RESOLVE
@@ -1122,13 +1135,14 @@ impl Game {
         {
             return;
         }
+        let pct = self.last_stand_strength();
         self.last_stand_used = true;
         for u in self.units.iter_mut().filter(|u| u.down.is_none()) {
-            u.hp = u.max_hp;
+            u.hp = u.hp.max(u.max_hp * pct / 100);
         }
-        self.hull += LAST_STAND_HULL_BONUS;
+        self.hull += LAST_STAND_HULL_BONUS * pct / 100;
         self.hull_max = self.hull_max.max(self.hull);
-        self.resolve = LAST_STAND_RESOLVE;
+        self.resolve = self.resolve.min(LAST_STAND_RESOLVE);
         self.say("Captain's Log: nobody said 'fall back'. Everyone up. This is the last stand.");
     }
 
@@ -1394,24 +1408,47 @@ mod tests {
     }
 
     #[test]
-    fn last_stand_needs_unbroken_resolve_and_a_hull_under_a_quarter() {
-        // hull exactly at 25% (50 of 200) is not low enough
+    fn last_stand_triggers_on_the_hull_not_on_high_resolve() {
+        // hull exactly at 25% (50 of 200) is not low enough, whatever the Resolve
         let mut g = last_stand_fixture(50, 95);
         g.resolve_wave();
         assert!(!g.last_stand_used);
-        // 49 is
-        let mut g = last_stand_fixture(49, 95);
+        // 49 is, and a Steady crew (not just an Unbroken one) gets it
+        let mut g = last_stand_fixture(49, 75);
         g.resolve_wave();
         assert!(g.last_stand_used);
-        // resolve 89 is not Unbroken
-        let mut g = last_stand_fixture(20, 89);
-        g.resolve_wave();
-        assert!(!g.last_stand_used);
         // a hull already at zero is too late
         let mut g = last_stand_fixture(0, 95);
         g.resolve_wave();
         assert!(!g.last_stand_used);
         assert_eq!(g.status, Status::Lost);
+    }
+
+    #[test]
+    fn last_stand_is_scaled_by_resolve_and_denied_to_a_frayed_crew() {
+        // (resolve, expected hull bonus, expected hp share of max)
+        for (resolve, bonus, share) in [(95, 50, 100), (80, 37, 75), (50, 25, 50)] {
+            let mut g = last_stand_fixture(40, resolve);
+            g.resolve_wave();
+            assert_eq!(g.hull, 40 + bonus, "resolve {resolve}: hull");
+            for u in g.units.iter() {
+                assert_eq!(u.hp, u.max_hp * share / 100, "resolve {resolve}: hp");
+            }
+            assert_eq!(
+                g.resolve,
+                resolve.min(LAST_STAND_RESOLVE),
+                "resolve {resolve}"
+            );
+        }
+        // Frayed (30 or below): nothing left to give, even with the hull failing
+        let mut g = last_stand_fixture(40, RESOLVE_FRAYED);
+        g.resolve_wave();
+        assert!(!g.last_stand_used);
+        assert_eq!(g.hull, 40);
+        // one point above Frayed is enough
+        let mut g = last_stand_fixture(40, RESOLVE_FRAYED + 1);
+        g.resolve_wave();
+        assert!(g.last_stand_used);
     }
 
     #[test]
