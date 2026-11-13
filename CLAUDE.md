@@ -42,6 +42,15 @@ Do NOT add Pilots, Systems Officers, Drifters, multiplayer, or a campaign yet.
 - `src/ui.rs`: drawing and input decoding. `Ui` holds the camera, drag box and pending attack-move. Input handlers read `Game` but only return `Command`s.
 - `src/main.rs`: terminal setup, the seed, and the real-time loop (applies commands, calls `update()` at 10 Hz).
 
+## Balance
+
+- Tuning knobs are named constants at the top of `src/sim.rs` (Wake pacing, surge timer and warning, Resolve, Beacon costs). Change those, not the rules.
+- `src/balance.rs` is a headless harness: scripted bots (Idle, Turtle, Player) play full games using only `Command`s.
+  - Report: `cargo test --release balance_report -- --ignored --nocapture`
+  - Trace how games end: `cargo test --release balance_trace -- --ignored --nocapture`
+  - Floor targets (CI runs this): `cargo test --release balance_targets_hold -- --ignored`
+- Retune with the report, not by feel. Findings so far: a tight group of Marines beats a spread-out one; idle Marines chasing Hollow (even leashed) did worse than standing together; the Player bot wins only ~2% of games, so "winnable by a good human" is unproven and needs real playtesting.
+
 ## Not yet done
 
 - The defensive structure is not implemented yet (README roadmap). Beacons are done.

@@ -22,7 +22,7 @@ A terminal of at least 100x30 is recommended.
 
 ## How to play
 
-**Hold and push.** Harvesting raises the sector's **Wake** meter. When Wake crosses a threshold (or time runs out), a Hollow **surge** hits your base, with a few seconds of warning. Surges keep getting bigger.
+**Hold and push.** Harvesting raises the sector's **Wake** meter. When Wake crosses a threshold (or time runs out), a Hollow **surge** hits your base, with about 15 seconds of warning. Surges keep getting bigger.
 
 **Win:** relight all four **Beacons**, then survive the final surge (the first one to launch after the fourth light comes on). If a Beacon goes dark before that surge is cleared, you'll have to relight it and hold out for the next one.
 

@@ -16,3 +16,5 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # Balance targets: full bot games, too slow for debug builds.
+      - run: cargo test --release balance_targets_hold -- --ignored

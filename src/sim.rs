@@ -11,6 +11,27 @@ pub const SHIP: (i32, i32) = (W / 2, H / 2);
 /// Real-time length of one tick (10 Hz). The sim itself only counts ticks.
 pub const TICK_MS: u64 = 100;
 pub const MAX_CREW: usize = 24;
+
+// Tuning knobs. Change these (and run the balance harness) rather than
+// editing the rules.
+/// Resolve the crew starts with.
+pub const START_RESOLVE: i32 = 70;
+/// Resolve lost when a Down crewmate is reclaimed by the Hollow.
+pub const RESOLVE_LOST_UNIT: i32 = 6;
+/// A surge is forced this many ticks after the last one, whatever the Wake.
+pub const SURGE_TIMER_TICKS: u64 = 1800;
+/// Warning between a surge being announced and the Hollow arriving.
+pub const SURGE_WARNING_TICKS: u32 = 150;
+/// Wake needed for the first surge, and the extra needed for each later one.
+pub const WAKE_TRIGGER_FIRST: f32 = 25.0;
+pub const WAKE_TRIGGER_STEP: f32 = 12.0;
+/// Wake gained per Driftglass delivered.
+pub const WAKE_PER_GLASS: f32 = 0.15;
+
+/// Hollow contacts in a surge, given how many have launched and the Wake.
+pub fn surge_size(launched: u32, wake: f32) -> u32 {
+    2 + launched + (wake / 25.0) as u32
+}
 pub const BEACON_COUNT: usize = 4;
 /// Ticks an Engineer must tend a Beacon to relight it (~8 s).
 pub const RELIGHT_TICKS: u32 = 80;
@@ -214,7 +235,7 @@ impl Game {
             hull_base: 200,
             glass: 100,
             wake: 0.0,
-            resolve: 60,
+            resolve: START_RESOLVE,
             tick: 0,
             // Scramble so neighbouring seeds (2k, 2k+1) give different games;
             // xorshift must never start at zero.
@@ -337,7 +358,7 @@ impl Game {
 
     /// If `t` is a Beacon (which can't be stood on), the walkable tile next
     /// to it that is closest to `from`; otherwise `t` itself.
-    fn standing_spot(&self, t: (i32, i32), from: (i32, i32)) -> (i32, i32) {
+    pub(crate) fn standing_spot(&self, t: (i32, i32), from: (i32, i32)) -> (i32, i32) {
         if !self.beacons.iter().any(|b| b.pos == t) {
             return t;
         }
@@ -445,6 +466,9 @@ impl Game {
             self.say(format!("Not enough Driftglass for a {}.", kind.name()));
             return;
         }
+        // First free spot near the ship. New crew deliberately clump on one
+        // side: the balance harness showed a tight group focuses fire far
+        // better than units spread around the hull.
         let mut spot = None;
         'search: for r in 3..6 {
             for dy in -r..=r {
@@ -610,13 +634,14 @@ impl Game {
         if self.surge.is_some() || self.surge_live {
             return;
         }
-        let wake_trigger = self.wake >= 25.0 + 12.0 * self.surges_launched as f32;
-        let timer_trigger = self.tick - self.last_surge >= 1200;
+        let wake_trigger =
+            self.wake >= WAKE_TRIGGER_FIRST + WAKE_TRIGGER_STEP * self.surges_launched as f32;
+        let timer_trigger = self.tick - self.last_surge >= SURGE_TIMER_TICKS;
         if wake_trigger || timer_trigger {
             let edge = self.rand(4) as u8;
-            let count = 2 + self.surges_launched * 2 + (self.wake / 20.0) as u32;
+            let count = surge_size(self.surges_launched, self.wake);
             self.surge = Some(Surge {
-                in_ticks: 60,
+                in_ticks: SURGE_WARNING_TICKS,
                 count,
                 edge,
             });
@@ -624,13 +649,14 @@ impl Game {
             self.last_surge = self.tick;
             self.final_surge = self.beacons_lit() == BEACON_COUNT;
             let dir = ["north", "east", "south", "west"][edge as usize];
+            let secs = SURGE_WARNING_TICKS / 10;
             if self.final_surge {
                 self.say(format!(
                     "FINAL SURGE from the {dir}. {count} contacts. All four lights are up; hold them."
                 ));
             } else {
                 self.say(format!(
-                    "SURGE inbound from the {dir}. {count} contacts, six seconds. Fortify!"
+                    "SURGE inbound from the {dir}. {count} contacts, {secs} seconds. Fortify!"
                 ));
             }
         }
@@ -817,7 +843,7 @@ impl Game {
         if u.carry >= 10 {
             if cheb(u.pos, SHIP) <= 3 {
                 self.glass += u.carry as i32;
-                self.wake = (self.wake + u.carry as f32 * 0.6).min(100.0);
+                self.wake = (self.wake + u.carry as f32 * WAKE_PER_GLASS).min(100.0);
                 u.carry = 0;
             } else if moving && let Some(p) = self.step_toward(u.pos, SHIP, 3) {
                 u.pos = p;
@@ -969,7 +995,12 @@ impl Game {
             u.order = Order::Idle;
             u.selected = false;
             let name = u.kind.name();
-            self.say(format!("A {name} is down! Get an engineer over there."));
+            let a = if name.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                "An"
+            } else {
+                "A"
+            };
+            self.say(format!("{a} {name} is down! Get an engineer over there."));
         }
     }
 
@@ -987,7 +1018,7 @@ impl Game {
         for &i in reclaimed.iter().rev() {
             let u = self.units.remove(i);
             self.add_foe(u.pos, 6);
-            self.resolve -= 10;
+            self.resolve -= RESOLVE_LOST_UNIT;
             self.say(format!(
                 "We lost the {}. The Hollow took it.",
                 u.kind.name()
@@ -1307,7 +1338,7 @@ mod tests {
         // beacons not all lit: an ordinary surge
         let mut g = Game::new(4);
         g.units.clear();
-        g.tick = 1200;
+        g.tick = SURGE_TIMER_TICKS;
         g.schedule_surge();
         assert!(g.surge.is_some() && !g.final_surge);
 
@@ -1318,7 +1349,7 @@ mod tests {
             b.lit = true;
             b.hp = BEACON_HP;
         }
-        g.tick = 1200;
+        g.tick = SURGE_TIMER_TICKS;
         g.schedule_surge();
         assert!(g.surge.is_some() && g.final_surge);
         assert!(g.log.iter().any(|l| l.contains("FINAL SURGE")));

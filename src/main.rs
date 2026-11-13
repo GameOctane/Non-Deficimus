@@ -23,6 +23,8 @@
 //! - [`ui`]: drawing and input decoding (input becomes `Command`s).
 //! - this file: terminal setup, the seed, and the real-time loop.
 
+#[cfg(test)]
+mod balance;
 mod sim;
 mod ui;
 
