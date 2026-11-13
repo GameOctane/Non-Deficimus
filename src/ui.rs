@@ -99,6 +99,41 @@ fn kind_color(k: Kind) -> Color {
     }
 }
 
+/// How many of each crew type are on their feet, coloured like their map
+/// glyphs. A zero Engineer count is shown in red: it is easy to miss when
+/// everyone is clumped together.
+fn roster_line(g: &Game) -> Line<'static> {
+    let count = |k: Kind| g.crew_count(k);
+    let engineers = count(Kind::Engineer);
+    let eng_style = if engineers == 0 {
+        Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(kind_color(Kind::Engineer))
+    };
+    let mut spans = vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("Cad {}", count(Kind::Cadet)),
+            Style::new().fg(kind_color(Kind::Cadet)),
+        ),
+        Span::raw("  "),
+        Span::styled(format!("Eng {engineers}"), eng_style),
+        Span::raw("  "),
+        Span::styled(
+            format!("Mar {}", count(Kind::Marine)),
+            Style::new().fg(kind_color(Kind::Marine)),
+        ),
+    ];
+    if g.down_count() > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("Down {}", g.down_count()),
+            Style::new().fg(Color::Magenta),
+        ));
+    }
+    Line::from(spans)
+}
+
 fn tier_color(t: ResolveTier) -> Color {
     match t {
         ResolveTier::Unbroken => Color::Yellow,
@@ -191,6 +226,12 @@ fn draw_briefing(f: &mut Frame, area: Rect) {
             Span::raw(" to order.  "),
             Span::styled("Arrows", key),
             Span::raw(" pan.  "),
+            Span::styled("c", key),
+            Span::raw(" all crew, "),
+            Span::styled("e", key),
+            Span::raw(" Engineers, "),
+            Span::styled("m", key),
+            Span::raw(" Marines.  "),
             Span::styled("?", key),
             Span::raw(" shows this again.  "),
             Span::styled("PgUp/PgDn", key),
@@ -479,7 +520,12 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
             format!("   {label}"),
             Style::new().fg(label_col),
         )),
-        Line::from(format!(" Crew {}  Hollow {}", g.units.len(), g.foes.len())),
+        Line::from(format!(
+            " Crew {}  Sel {selected}  Hollow {}",
+            g.units.len(),
+            g.foes.len()
+        )),
+        roster_line(g),
         Line::from(format!(
             " Beacons {}/{}  Held {}",
             g.beacons_lit(),
@@ -487,8 +533,6 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
             g.surges_cleared
         )),
         surge_line(g),
-        Line::from(format!(" Selected {selected}")),
-        Line::from(""),
         Line::from(format!(" [1] Cadet     {}", g.train_cost(Kind::Cadet))),
         Line::from(format!(" [2] Engineer  {}", g.train_cost(Kind::Engineer))),
         Line::from(format!(" [3] Marine    {}", g.train_cost(Kind::Marine))),
@@ -504,7 +548,7 @@ pub fn draw(f: &mut Frame, g: &Game, ui: &Ui) {
             Span::raw("")
         }),
         Line::from(Span::styled(" drag: select  RMB: order", hint)),
-        Line::from(Span::styled(" RMB on H: focus fire", hint)),
+        Line::from(Span::styled(" e: all eng.  m: all marines", hint)),
         Line::from(Span::styled(" a: attack-move  h: hold", hint)),
         Line::from(Span::styled(" c: all  arrows: pan", hint)),
         Line::from(Span::styled(" ?: help  spc: pause  q: quit", hint)),
@@ -671,6 +715,8 @@ pub fn handle_key(
             KeyAction::Command(Command::Hold)
         }
         KeyCode::Char('c') => KeyAction::Command(Command::SelectAll),
+        KeyCode::Char('e') => KeyAction::Command(Command::SelectKind(Kind::Engineer)),
+        KeyCode::Char('m') => KeyAction::Command(Command::SelectKind(Kind::Marine)),
         KeyCode::Char(' ') => KeyAction::Command(Command::TogglePause),
         KeyCode::Char('1') => KeyAction::Command(Command::Train(Kind::Cadet)),
         KeyCode::Char('2') => KeyAction::Command(Command::Train(Kind::Engineer)),
@@ -1006,6 +1052,55 @@ mod tests {
         assert!(ui.pending_amove && !ui.pending_build);
         key(&mut ui, &g2, '4');
         assert!(ui.pending_build && !ui.pending_amove);
+    }
+
+    #[test]
+    fn select_by_kind_keys_issue_commands() {
+        let (mut ui, g) = (quiet_ui(), Game::new(1));
+        assert!(matches!(
+            key(&mut ui, &g, 'e'),
+            KeyAction::Command(Command::SelectKind(Kind::Engineer))
+        ));
+        assert!(matches!(
+            key(&mut ui, &g, 'm'),
+            KeyAction::Command(Command::SelectKind(Kind::Marine))
+        ));
+    }
+
+    #[test]
+    fn the_sidebar_lists_crew_by_type_and_flags_no_engineers() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let ui = quiet_ui();
+        let mut g = Game::new(1);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| draw(f, &g, &ui)).unwrap();
+        let text = screen_text(&terminal);
+        assert!(text.contains("Cad 2  Eng 1  Mar 1"), "roster missing");
+        assert!(!text.contains("Down"));
+        // the lone Engineer goes Down: count drops to zero and Down shows
+        let e = g
+            .units
+            .iter()
+            .position(|u| u.kind == Kind::Engineer)
+            .unwrap();
+        g.units[e].down = Some(100);
+        terminal.draw(|f| draw(f, &g, &ui)).unwrap();
+        let text = screen_text(&terminal);
+        assert!(text.contains("Eng 0"), "zero Engineers must be visible");
+        assert!(text.contains("Down 1"));
+    }
+
+    #[test]
+    fn the_whole_sidebar_fits_the_recommended_minimum_terminal() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (g, ui) = (Game::new(1), quiet_ui());
+        let mut terminal = Terminal::new(TestBackend::new(MIN_COLS, MIN_ROWS)).unwrap();
+        terminal.draw(|f| draw(f, &g, &ui)).unwrap();
+        let text = screen_text(&terminal);
+        // first and last sidebar rows, and the new roster and training rows
+        for needle in ["Driftglass", "Cad 2  Eng 1  Mar 1", "[4] Turret", "q: quit"] {
+            assert!(text.contains(needle), "{needle:?} is cut off at 100x30");
+        }
     }
 
     #[test]

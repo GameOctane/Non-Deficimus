@@ -284,6 +284,8 @@ pub enum Command {
         max: (i32, i32),
     },
     SelectAll,
+    /// Select every able crewmate of one kind (e.g. all Engineers).
+    SelectKind(Kind),
     Deselect,
     TogglePause,
     /// Build a turret on the tile; an Engineer walks over to raise it.
@@ -662,6 +664,7 @@ impl Game {
             Command::Train(kind) => self.train(kind),
             Command::SelectBox { min, max } => self.select_box(min, max),
             Command::SelectAll => self.select_all(),
+            Command::SelectKind(kind) => self.select_kind(kind),
             Command::Deselect => self.units.iter_mut().for_each(|u| u.selected = false),
             Command::TogglePause => self.paused = !self.paused,
             Command::Build(t) => self.build_turret(t),
@@ -681,6 +684,36 @@ impl Game {
     fn select_all(&mut self) {
         for u in self.units.iter_mut() {
             u.selected = u.down.is_none();
+        }
+    }
+
+    fn select_kind(&mut self, kind: Kind) {
+        for u in self.units.iter_mut() {
+            u.selected = u.down.is_none() && u.kind == kind;
+        }
+    }
+
+    /// Crew of this kind who are on their feet (not Down).
+    pub fn crew_count(&self, kind: Kind) -> usize {
+        self.units
+            .iter()
+            .filter(|u| u.kind == kind && u.down.is_none())
+            .count()
+    }
+
+    /// Crew who are Down and waiting for an Engineer.
+    pub fn down_count(&self) -> usize {
+        self.units.iter().filter(|u| u.down.is_some()).count()
+    }
+
+    /// Without an Engineer on their feet nobody is patched or recovered and
+    /// no Beacon or turret gets finished. Say so, since it is easy to miss
+    /// when the crew is clumped together.
+    fn warn_if_no_engineers(&mut self) {
+        if self.crew_count(Kind::Engineer) == 0 {
+            self.say(
+                "No Engineer left on their feet. Nobody gets patched, recovered or relit. Train one with 2.",
+            );
         }
     }
 
@@ -1328,13 +1361,17 @@ impl Game {
             u.down = Some(300);
             u.order = Order::Idle;
             u.selected = false;
-            let name = u.kind.name();
+            let kind = u.kind;
+            let name = kind.name();
             let a = if name.starts_with(['a', 'e', 'i', 'o', 'u']) {
                 "An"
             } else {
                 "A"
             };
             self.say(format!("{a} {name} is down! Get an engineer over there."));
+            if kind == Kind::Engineer {
+                self.warn_if_no_engineers();
+            }
         }
     }
 
@@ -1357,6 +1394,9 @@ impl Game {
                 "We lost the {}. The Hollow took it.",
                 u.kind.name()
             ));
+            if u.kind == Kind::Engineer {
+                self.warn_if_no_engineers();
+            }
         }
     }
 
@@ -1828,6 +1868,86 @@ mod tests {
             g.update();
         }
         assert!(g.surge.is_none(), "no final surge while a Beacon is dark");
+    }
+
+    // ------------------------------------------------------ roster
+
+    #[test]
+    fn the_roster_counts_crew_on_their_feet_and_the_down() {
+        let mut g = Game::new(3);
+        assert_eq!(g.crew_count(Kind::Cadet), 2);
+        assert_eq!(g.crew_count(Kind::Engineer), 1);
+        assert_eq!(g.crew_count(Kind::Marine), 1);
+        assert_eq!(g.down_count(), 0);
+        let e = g
+            .units
+            .iter()
+            .position(|u| u.kind == Kind::Engineer)
+            .unwrap();
+        g.units[e].down = Some(100);
+        assert_eq!(
+            g.crew_count(Kind::Engineer),
+            0,
+            "a Down Engineer cannot help"
+        );
+        assert_eq!(g.down_count(), 1);
+    }
+
+    #[test]
+    fn select_kind_picks_only_able_crew_of_that_kind() {
+        let mut g = Game::new(3);
+        g.apply(Command::Train(Kind::Engineer));
+        g.apply(Command::Train(Kind::Marine));
+        let first = g
+            .units
+            .iter()
+            .position(|u| u.kind == Kind::Engineer)
+            .unwrap();
+        g.units[first].down = Some(100); // Down: not selectable
+        g.apply(Command::SelectKind(Kind::Engineer));
+        for (i, u) in g.units.iter().enumerate() {
+            let want = u.kind == Kind::Engineer && i != first;
+            assert_eq!(u.selected, want, "unit {i} ({:?})", u.kind);
+        }
+        // switching kinds replaces the selection
+        g.apply(Command::SelectKind(Kind::Marine));
+        assert!(
+            g.units
+                .iter()
+                .all(|u| u.selected == (u.kind == Kind::Marine))
+        );
+    }
+
+    #[test]
+    fn losing_the_last_engineer_is_called_out_in_the_log() {
+        // goes Down with no one to recover them
+        let mut g = Game::new(3);
+        g.units.clear();
+        g.spawn_unit(Kind::Engineer, (SHIP.0 + 4, SHIP.1 + 4));
+        g.spawn_unit(Kind::Marine, (SHIP.0 + 6, SHIP.1 + 4));
+        g.units[0].hp = 1;
+        g.hit_unit(0);
+        assert!(g.units[0].down.is_some());
+        assert!(g.log.back().unwrap().contains("No Engineer left"));
+
+        // a second Engineer on their feet means no alarm
+        let mut g = Game::new(3);
+        g.units.clear();
+        g.spawn_unit(Kind::Engineer, (SHIP.0 + 4, SHIP.1 + 4));
+        g.spawn_unit(Kind::Engineer, (SHIP.0 + 6, SHIP.1 + 4));
+        g.units[0].hp = 1;
+        g.hit_unit(0);
+        assert!(g.units[0].down.is_some());
+        assert!(!g.log.iter().any(|l| l.contains("No Engineer left")));
+
+        // reclaimed by the Hollow with no replacement
+        let mut g = Game::new(3);
+        g.units.clear();
+        g.spawn_unit(Kind::Engineer, (SHIP.0 + 4, SHIP.1 + 4));
+        g.units[0].down = Some(1);
+        g.update_down();
+        assert!(g.units.is_empty());
+        assert!(g.log.back().unwrap().contains("No Engineer left"));
     }
 
     // ------------------------------------------------------ turrets

@@ -18,7 +18,7 @@ You need a recent [Rust toolchain](https://rustup.rs) and a terminal with mouse 
 cargo run --release
 ```
 
-A terminal of at least 100x30 is recommended (the map title warns you if yours is smaller). On a low-resolution screen, maximize or full-screen the terminal and zoom the font out (Ctrl+minus, or Ctrl+scroll in Windows Terminal) until it fits; the map and comms log grow to fill whatever space you give them. You start with four crew and **can train more** with `1` `2` `3`; a briefing screen explains this when the game opens.
+The sidebar lists how many Cadets, Engineers and Marines you have on their feet (and how many are Down); a red `Eng 0` means nobody can patch or recover anyone. A terminal of at least 100x30 is recommended (the map title warns you if yours is smaller). On a low-resolution screen, maximize or full-screen the terminal and zoom the font out (Ctrl+minus, or Ctrl+scroll in Windows Terminal) until it fits; the map and comms log grow to fill whatever space you give them. You start with four crew and **can train more** with `1` `2` `3`; a briefing screen explains this when the game opens.
 
 ## How to play
 
@@ -73,6 +73,7 @@ Four dead Beacons sit around the sector, each farther from the ship than the las
 | `1` `2` `3` | Train a Cadet, Engineer or Marine |
 | `4`, then click | Build a turret on that tile (an Engineer walks over to raise it) |
 | `c` | Select all crew |
+| `e` / `m` | Select all Engineers / all Marines |
 | Arrows | Pan the map |
 | `Esc` | Deselect (also cancels a pending attack-move) |
 | `PgUp` / `PgDn` | Scroll the comms log back / forward (`End` jumps to the latest; `Space` pauses so you can read) |
@@ -93,6 +94,7 @@ The simulation is deterministic (fixed 10 Hz tick, seeded RNG), which keeps lock
 
 - [x] Beacons to relight
 - [x] A defensive structure to build (the turret)
+- [ ] A replicator: a structure that makes crew
 - [ ] Fog of war (lit Beacons could reveal the sector)
 - [ ] Upgrades for structures, crew and the Hollow
 - [ ] Pilots and Systems Officers
